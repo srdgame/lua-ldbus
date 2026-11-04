@@ -1,0 +1,10 @@
+local home = os.getenv("HOME")
+return {
+  _all = {
+    coverage = false,
+    verbose = false,
+    lpath = "./src/?.lua;./src/?/init.lua;./spec/helpers/?.lua",
+    -- lsocket is installed outside the default lua5.4 cpath (see README)
+    cpath = home .. "/.lua5.4/lib/?.so",
+  },
+}
