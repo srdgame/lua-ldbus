@@ -198,9 +198,10 @@ function message.parse(data)
 
   -- The fields region holds raw (yv) entries starting at offset 16, with
   -- no array length prefix (see build). Reconstruct the standard a(yv)
-  -- framing (length + pad to element alignment) so the normal decoder
-  -- can walk it; offsets stay 8-aligned either way.
-  local fields_raw = string.pack("<I4", fields_len + 4) .. "\0\0\0\0"
+  -- framing (length + mandatory pad before the first entry) so the normal
+  -- decoder can walk it; offsets stay 8-aligned either way. The length
+  -- excludes the padding, per spec.
+  local fields_raw = string.pack("<I4", fields_len) .. "\0\0\0\0"
     .. data:sub(FIXED_HEADER_LEN + 1, FIXED_HEADER_LEN + fields_len)
   local entries, fields_err = marshal.decode_signature(FIELD_SIGNATURE, fields_raw)
   if not entries then

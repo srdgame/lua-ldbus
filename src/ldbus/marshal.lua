@@ -36,13 +36,15 @@ end
 -- Encoder
 --------------------------------------------------------------------------------
 
-local Encoder = {}
-Encoder.__index = Encoder
+local middleclass = require "ldbus.class"
+
+local Encoder = middleclass("Encoder")
 
 --- `start_pos` is the absolute wire offset this buffer begins at, so
 -- sub-buffers (array bodies) keep correct relative alignment.
-function Encoder.new(start_pos)
-  return setmetatable({ chunks = {}, pos = start_pos or 0 }, Encoder)
+function Encoder:initialize(start_pos)
+  self.chunks = {}
+  self.pos = start_pos or 0
 end
 
 function Encoder:write(s)
@@ -172,17 +174,21 @@ encode_array = function(node, value, enc)
   enc:align(4)
   -- Elements are encoded into a sub-buffer positioned *after* the
   -- length prefix so that element alignments match absolute offsets.
-  local sub = Encoder.new(enc.pos + 4)
+  local sub = Encoder(enc.pos + 4)
   local elem_align = types.alignment_of(signature.node_to_string(node.elem))
+  -- The alignment padding before the first element is mandatory even
+  -- for empty arrays and is NOT counted in the length prefix.
+  local lead = types.padding_needed(enc.pos + 4, elem_align)
+  sub:write(string.rep("\0", lead))
   for i = 1, #value do
     sub:align(elem_align)
     encode_node(node.elem, value[i], sub)
   end
   local body = sub:result()
-  if #body > 2147483647 then
+  if #body - lead > 2147483647 then
     error("array body too large", 3)
   end
-  enc:pack("<I4", #body)
+  enc:pack("<I4", #body - lead)
   enc:write(body)
 end
 
@@ -201,15 +207,19 @@ encode_dict = function(node, value, enc)
     table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
   end
   enc:align(4)
-  local sub = Encoder.new(enc.pos + 4)
+  local sub = Encoder(enc.pos + 4)
   local entry_align = 8
+  -- Leading padding before the first entry is required even for empty
+  -- dicts and is NOT counted in the length prefix.
+  local lead = types.padding_needed(enc.pos + 4, entry_align)
+  sub:write(string.rep("\0", lead))
   for _, k in ipairs(keys) do
     sub:align(entry_align)
     encode_node(entry.key, k, sub)
     encode_node(entry.value, value[k], sub)
   end
   local body = sub:result()
-  enc:pack("<I4", #body)
+  enc:pack("<I4", #body - lead)
   enc:write(body)
 end
 
@@ -218,7 +228,7 @@ end
 -- for header fields, which start at offset 16 in a message).
 -- Returns the encoded body string.
 function marshal.encode(nodes, values, start_pos)
-  local enc = Encoder.new(start_pos or 0)
+  local enc = Encoder(start_pos or 0)
   for i, node in ipairs(nodes) do
     encode_node(node, values[i], enc)
   end
@@ -229,11 +239,11 @@ end
 -- Decoder
 --------------------------------------------------------------------------------
 
-local Decoder = {}
-Decoder.__index = Decoder
+local Decoder = middleclass("Decoder")
 
-function Decoder.new(data)
-  return setmetatable({ data = data, pos = 1 }, Decoder) -- Lua 1-based
+function Decoder:initialize(data)
+  self.data = data
+  self.pos = 1 -- Lua 1-based
 end
 
 function Decoder:align(alignment)
@@ -311,16 +321,14 @@ local function decode_node(node, dec)
   elseif code == "a" then
     dec:align(4)
     local body_len = dec:unpack("<I4")
+    local elem_align = types.alignment_of(signature.node_to_string(node.elem))
+    -- The length does NOT include the mandatory alignment padding
+    -- before the first element; skip it now and include it in the bound.
+    dec:align(elem_align)
     if dec.pos + body_len - 1 > #dec.data then
       error("array body length exceeds available data")
     end
     local result = {}
-    if body_len == 0 then
-      return result
-    end
-    local elem_align = types.alignment_of(signature.node_to_string(node.elem))
-    -- body_len starts right after the length prefix and INCLUDES the
-    -- alignment padding before the first element.
     local end_pos = dec.pos + body_len
     if node.elem.code == "e" then
       while dec.pos < end_pos do
@@ -356,7 +364,7 @@ end
 --- Decode `data` (a body string) against a list of signature nodes.
 -- Returns `values` (a list) or `nil, err`.
 function marshal.decode(nodes, data)
-  local dec = Decoder.new(data)
+  local dec = Decoder(data)
   local values = {}
   for i, node in ipairs(nodes) do
     local ok, v = pcall(decode_node, node, dec)

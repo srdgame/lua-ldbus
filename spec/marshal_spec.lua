@@ -112,9 +112,10 @@ describe("ldbus.marshal", function()
 
     it("aligns nested struct elements to 8 bytes inside array body", function()
       -- "a(yu)" with one entry {5,6}: body starts at offset 4, struct
-      -- aligns to 8 (4 pad), y=5, u aligns to 4, body = 12 = 0x0c
+      -- aligns to 8 (4 pad, not counted in length), y=5, u aligns to 4,
+      -- element bytes = 8 = 0x08
       local data = enc("a(yu)", { { { 5, 6 } } })
-      assert.equals("0c000000"
+      assert.equals("08000000"
         .. "00000000"
         .. "05000000"
         .. "06000000", hex(data))
@@ -133,42 +134,45 @@ describe("ldbus.marshal", function()
 
   describe("dict entries", function()
     it("encodes empty dict", function()
-      assert.equals("00000000", hex(enc("a{sv}", { {} })))
+      -- length 0, but the mandatory leading padding is still emitted
+      assert.equals("00000000" .. "00000000", hex(enc("a{sv}", { {} })))
     end)
 
     it("encodes string->string dict", function()
-      -- body starts at offset 4; first entry is 8-aligned so 4 bytes pad;
-      -- key "k": 01000000 6b00 (6 bytes), value aligns to 4 (2 pad), "v": 01000000 7600
+      -- body starts at offset 4; first entry is 8-aligned so 4 bytes pad
+      -- (not counted in the length); key "k": 01000000 6b00 (6 bytes),
+      -- value aligns to 4 (2 pad), "v": 01000000 7600
       local data = enc("a{ss}", { { k = "v" } })
-      assert.equals("12000000"
+      assert.equals("0e000000"
         .. "00000000"
         .. "010000006b00"
         .. "0000"
         .. "010000007600",
         hex(data))
-      -- length = 4 + 6 + 2 + 6 = 18 = 0x12
+      -- length = 6 + 2 + 6 = 14 = 0x0e
     end)
 
     it("encodes sv dict with variant", function()
       local data = enc("a{sv}", { { key = types.variant("s", "val") } })
-      -- body: 4 pad (entry 8-align), key "key" (8 bytes), sig "s" = 0173,
-      -- value aligns to 4 (1 pad), "val" = 03000000 76616c00
-      assert.equals("18000000"
+      -- body: 4 pad (entry 8-align, not counted in length), key "key"
+      -- (8 bytes), sig "s" = 0173, value aligns to 4 (1 pad),
+      -- "val" = 03000000 76616c00
+      assert.equals("14000000"
         .. "00000000"
         .. "030000006b657900"
         .. "017300"
         .. "00"
         .. "0300000076616c00",
         hex(data))
-      -- length = 4 + 8 + 3 + 1 + 6 = 22? no: 24 = 0x18 (incl. sig pad)
+      -- length = 8 + 3 + 1 + 8 = 20 = 0x14 (padding excluded)
     end)
 
     it("encodes dict with numeric keys sorted", function()
       local data = enc("a{yu}", { { [3] = 30, [1] = 10, [2] = 20 } })
-      -- body: 4 bytes alignment pad (body starts at offset 4, entries at 8),
-      -- then 3 x 8-byte entries: y + pad3 + u32
+      -- body: 4 bytes alignment pad (body starts at offset 4, entries at 8,
+      -- padding excluded from the length), then 3 x 8-byte entries
       local h = hex(data)
-      assert.equals("1c000000", h:sub(1, 8))
+      assert.equals("18000000", h:sub(1, 8))
       -- entries sorted 1,2,3 after the leading pad
       assert.equals("00000000"
         .. "01000000" .. "0a000000"

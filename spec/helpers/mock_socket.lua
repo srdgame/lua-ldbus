@@ -2,25 +2,23 @@
 -- The mock replays canned replies and records everything sent.
 -- Usage:
 --   local mock = require "helpers.mock_socket"
---   local io_obj = mock.new({ replies = { "OK 1234\r\n" } })
+--   local io_obj = mock({ replies = { "OK 1234\r\n" } })
 --   io_obj:send("\0")            -- recorded in io_obj.written
 --   io_obj:read_line()           -- pops from replies (feed Buffer)
 --
 -- It also exposes a `pending` buffer so tests can push more data
 -- between calls: io_obj:feed("chunk").
-local mock = {}
+local middleclass = require "ldbus.class"
 
-mock.__index = mock
+local mock = middleclass("MockIo")
 
-function mock.new(opts)
+function mock:initialize(opts)
   opts = opts or {}
   local Buffer = require "ldbus.buffer"
-  return setmetatable({
-    buf = Buffer.new(),
-    replies = opts.replies or {},
-    written = {},
-    closed = false,
-  }, mock)
+  self.buf = Buffer()
+  self.replies = opts.replies or {}
+  self.written = {}
+  self.closed = false
 end
 
 --- Queue extra data to be returned by subsequent reads.

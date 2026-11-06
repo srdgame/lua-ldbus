@@ -63,7 +63,7 @@ end
 function mainloop.run(buses, opts)
   opts = opts or {}
   local bus_list, conns = collect(buses)
-  local sched = scheduler.new()
+  local sched = scheduler()
   if opts.on_error then
     sched.on_error = opts.on_error
   end

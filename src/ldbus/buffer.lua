@@ -5,11 +5,12 @@
 --   * frame mode (messages: `take(n)` once the total length is known)
 -- @module ldbus.buffer
 
-local Buffer = {}
-Buffer.__index = Buffer
+local middleclass = require "ldbus.class"
 
-function Buffer.new()
-  return setmetatable({ data = "" }, Buffer)
+local Buffer = middleclass("Buffer")
+
+function Buffer:initialize()
+  self.data = ""
 end
 
 --- Append a chunk (any size, including "" or false, both ignored).

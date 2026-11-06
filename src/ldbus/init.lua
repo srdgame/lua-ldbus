@@ -4,17 +4,21 @@
 -- name ownership.
 -- @module ldbus
 
+local middleclass = require "ldbus.class"
 local Connection = require "ldbus.connection"
 local router = require "ldbus.router"
 local errors = require "ldbus.errors"
 local name = require "ldbus.name"
 local mainloop = require "ldbus.mainloop"
+local types = require "ldbus.types"
 
 local ldbus = {
   _VERSION = "ldbus 0.1.0",
   flags = name.FLAG,
   result = name.RESULT,
   errors = errors,
+  variant = types.variant,
+  types = types,
 }
 
 local DBUS_DEST = "org.freedesktop.DBus"
@@ -25,13 +29,16 @@ local DBUS_IFACE = "org.freedesktop.DBus"
 -- Bus wrapper
 --------------------------------------------------------------------------------
 
-local Bus = {}
-Bus.__index = Bus
+local Bus = middleclass("Bus")
+
+function Bus:initialize(conn)
+  self.conn = conn
+end
 
 --- Wrap a Connection into the high-level Bus API.
 function ldbus.wrap(conn)
   router.attach(conn)
-  return setmetatable({ conn = conn }, Bus)
+  return Bus(conn)
 end
 
 --- Connect and return a Bus, or nil + error message.
@@ -105,6 +112,12 @@ function Bus:on_signal(iface, member, fn, opts)
     router.add_match(self.conn, name.match_signal(iface, member))
   end
   return router.on_signal(self.conn, iface, member, fn)
+end
+
+--- Unsubscribe a handler registered with on_signal. Returns true if it
+--- was removed. (No RemoveMatch is sent; harmless leftover rule.)
+function Bus:off_signal(iface, member, fn)
+  return router.off_signal(self.conn, iface, member, fn)
 end
 
 --- Request a well-known name. Returns the RequestName result code

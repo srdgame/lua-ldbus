@@ -14,8 +14,9 @@ local address = require "ldbus.address"
 local socketio = require "ldbus.socketio"
 local lsocket = require "lsocket"
 
-local Connection = {}
-Connection.__index = Connection
+local middleclass = require "ldbus.class"
+
+local Connection = middleclass("Connection")
 
 local SERIAL_MAX = 4294967295
 local DBUS_DEST = "org.freedesktop.DBus"
@@ -48,23 +49,22 @@ end
 
 --- Create a connection over an existing io object (testing-friendly).
 -- Call :authenticate() and :hello() before using it.
-function Connection.new(io)
-  return setmetatable({
-    io = io,
-    buf = buffermod.new(),
-    serial = 0,
-    unique_name = nil,
-    pending = {},      -- serial -> callback(reply_msg)
-    signal_handlers = {}, -- filled in by router.lua
-    closed = false,
-    loop_mode = false, -- set by mainloop; call() yields instead of blocking
-    on_message = nil,  -- hook used by router/mainloop
-  }, Connection)
+function Connection:initialize(io)
+  self.io = io
+  self.buf = buffermod()
+  self.serial = 0
+  self.unique_name = nil
+  self.pending = {}      -- serial -> callback(reply_msg)
+  self.signal_handlers = {} -- filled in by router.lua
+  self.closed = false
+  self.loop_mode = false -- set by mainloop; call() yields instead of blocking
+  self.on_message = nil  -- hook used by router/mainloop
 end
 
 --- Resolve an address target ("session", "system", or a parsed table)
 --- and connect + authenticate + Hello. Returns the Connection.
-function Connection.connect(target)
+-- Static method: Connection.connect(target).
+function Connection.static.connect(target)
   local addr
   if type(target) == "table" then
     addr = target
@@ -79,7 +79,7 @@ function Connection.connect(target)
   if not sock then
     return nil, "connect failed: " .. err
   end
-  local conn = Connection.new(lsocket_io(sock))
+  local conn = Connection(lsocket_io(sock))
   local guid, aerr = conn:authenticate()
   if not guid then
     conn:close()
@@ -93,7 +93,7 @@ function Connection.connect(target)
   return conn
 end
 
-function Connection.next_serial(self)
+function Connection:next_serial()
   self.serial = (self.serial + 1) % 4294967296
   if self.serial == 0 then
     self.serial = 1

@@ -3,6 +3,8 @@
 -- inside a handler maps back to an error reply.
 -- @module ldbus.errors
 
+local middleclass = require "ldbus.class"
+
 local errors = {}
 
 errors.FAILED = "org.freedesktop.DBus.Error.Failed"
@@ -14,20 +16,26 @@ errors.NAME_HAS_NO_OWNER = "org.freedesktop.DBus.Error.NameHasNoOwner"
 errors.ACCESS_DENIED = "org.freedesktop.DBus.Error.AccessDenied"
 errors.TIMEOUT = "org.freedesktop.DBus.Error.Timeout"
 
-local DBusError = {}
-DBusError.__index = DBusError
-DBusError.__tostring = function(e)
-  return e.name .. ": " .. e.message
+local DBusError = middleclass("DBusError")
+
+function DBusError:initialize(err_name, msg)
+  self.name = err_name or errors.FAILED
+  self.message = msg or ""
+end
+
+function DBusError:__tostring()
+  return self.name .. ": " .. self.message
 end
 
 --- Create a DBusError value (throw it with error() from handlers).
 function errors.new(err_name, msg)
-  return setmetatable({ name = err_name or errors.FAILED, message = msg or "" }, DBusError)
+  return DBusError(err_name, msg)
 end
 
 --- Check whether a value is a DBusError.
 function errors.is(v)
-  return type(v) == "table" and getmetatable(v) == DBusError
+  return type(v) == "table" and v.isInstanceOf ~= nil
+    and v:isInstanceOf(DBusError)
 end
 
 --- Build a DBusError from a parsed ERROR message (msg.body must be decoded).

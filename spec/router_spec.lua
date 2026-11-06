@@ -6,8 +6,8 @@ local mock = require "mock_socket"
 
 --- Connection wired to a mock io. `feed_in(data)` injects incoming bytes.
 local function new_conn()
-  local io_obj = mock.new({})
-  local conn = Connection.new(io_obj)
+  local io_obj = mock({})
+  local conn = Connection(io_obj)
   router.attach(conn)
   return conn, io_obj
 end

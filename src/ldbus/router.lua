@@ -41,6 +41,26 @@ function router.on_signal(conn, iface, member, fn)
   return true
 end
 
+--- Remove a previously registered signal handler.
+-- Returns true if it was removed, false if it was not registered.
+function router.off_signal(conn, iface, member, fn)
+  local iface_handlers = conn.signal_handlers[iface]
+  if not iface_handlers then
+    return false
+  end
+  local list = iface_handlers[member or ""]
+  if not list then
+    return false
+  end
+  for i, existing in ipairs(list) do
+    if existing == fn then
+      table.remove(list, i)
+      return true
+    end
+  end
+  return false
+end
+
 --- Send an AddMatch rule to the bus (blocking outside a mainloop).
 function router.add_match(conn, rule)
   return conn:call(DBUS_DEST, DBUS_PATH, DBUS_IFACE, "AddMatch",

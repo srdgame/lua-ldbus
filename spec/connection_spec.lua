@@ -6,8 +6,8 @@ local mock = require "mock_socket"
 --- replies (each entry = one recv chunk). The connection is NOT
 --- authenticated; tests drive message exchange directly.
 local function new_conn(replies)
-  local io_obj = mock.new({ replies = replies })
-  local conn = Connection.new(io_obj)
+  local io_obj = mock({ replies = replies })
+  local conn = Connection(io_obj)
   return conn, io_obj
 end
 

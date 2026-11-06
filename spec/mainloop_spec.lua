@@ -6,8 +6,8 @@ local mock = require "mock_socket"
 
 --- Bus over a mock io.
 local function mock_bus()
-  local io_obj = mock.new({})
-  return ldbus.wrap(Connection.new(io_obj)), io_obj
+  local io_obj = mock({})
+  return ldbus.wrap(Connection(io_obj)), io_obj
 end
 
 --- Build a method_return for `serial` with values.

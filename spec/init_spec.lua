@@ -6,8 +6,8 @@ local mock = require "mock_socket"
 
 --- A Bus over a mock io (no bus daemon behind it).
 local function mock_bus()
-  local io_obj = mock.new({})
-  local conn = Connection.new(io_obj)
+  local io_obj = mock({})
+  local conn = Connection(io_obj)
   return ldbus.wrap(conn), io_obj
 end
 

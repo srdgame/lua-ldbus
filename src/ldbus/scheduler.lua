@@ -3,17 +3,16 @@
 -- is resumed with the reply message when wake(serial, reply) fires.
 -- @module ldbus.scheduler
 
-local scheduler = {}
-scheduler.__index = scheduler
+local middleclass = require "ldbus.class"
+
+local scheduler = middleclass("Scheduler")
 
 --- Create a scheduler.
-function scheduler.new()
-  return setmetatable({
-    tasks = {},   -- coroutine -> record { co, key, deadline }
-    ready = {},   -- FIFO of runnable records
-    waiting = {}, -- wait-key -> record
-    on_error = nil, -- fn(err) for task errors (default: stderr)
-  }, scheduler)
+function scheduler:initialize()
+  self.tasks = {}    -- coroutine -> record { co, key, deadline }
+  self.ready = {}    -- FIFO of runnable records
+  self.waiting = {}  -- wait-key -> record
+  self.on_error = nil -- fn(err) for task errors (default: stderr)
 end
 
 --- Spawn a task: fn runs in a coroutine, args passed through.
@@ -37,8 +36,12 @@ end
 
 --- Wait keys combine the connection and serial (serials are only
 --- unique per connection, and one scheduler may drive many connections).
-function scheduler.wait_key(conn, serial)
-  return tostring(conn) .. ":" .. serial
+-- Keys are built from the connection's plain io table (middleclass
+-- instances all stringify as "instance of class ...", so `conn` itself
+-- is not unique as a string).
+-- Static method: scheduler.wait_key(conn, serial).
+function scheduler.static.wait_key(conn, serial)
+  return tostring(conn.io) .. ":" .. serial
 end
 
 --- Suspend the current task until wake(key, reply). Called from

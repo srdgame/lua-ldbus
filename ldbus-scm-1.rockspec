@@ -20,6 +20,7 @@ description = {
 dependencies = {
   "lua >= 5.4, < 5.5",
   "lsocket >= 1.4",
+  "middleclass >= 4.1",
 }
 
 build = {

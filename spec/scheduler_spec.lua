@@ -2,7 +2,7 @@ local scheduler = require "ldbus.scheduler"
 
 describe("ldbus.scheduler", function()
   it("spawn runs a task immediately on run()", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local ran = false
     sched:spawn(function() ran = true end)
     assert.is_false(ran) -- not yet: runs on run()
@@ -11,7 +11,7 @@ describe("ldbus.scheduler", function()
   end)
 
   it("spawn(fn, ...) passes arguments", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local a, b
     sched:spawn(function(x, y) a, b = x, y end, 1, "two")
     sched:run()
@@ -20,7 +20,7 @@ describe("ldbus.scheduler", function()
   end)
 
   it("wait/wake: task suspends until its serial wakes it", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local result
     sched:spawn(function()
       local reply = sched:wait(42)
@@ -35,7 +35,7 @@ describe("ldbus.scheduler", function()
   end)
 
   it("task errors do not kill other tasks", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local errors_seen = {}
     sched.on_error = function(err) errors_seen[#errors_seen + 1] = err end
     local after = false
@@ -48,7 +48,7 @@ describe("ldbus.scheduler", function()
   end)
 
   it("wait with deadline expires (returns nil reply)", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local timed_out = "not yet"
     sched:spawn(function()
       local reply = sched:wait(5, os.clock() - 1) -- already past
@@ -61,7 +61,7 @@ describe("ldbus.scheduler", function()
   end)
 
   it("non-expired deadlines keep the task waiting", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local done = false
     sched:spawn(function()
       sched:wait(9, os.clock() + 10)
@@ -77,7 +77,7 @@ describe("ldbus.scheduler", function()
   end)
 
   it("nested spawn inside a task works", function()
-    local sched = scheduler.new()
+    local sched = scheduler()
     local result
     sched:spawn(function()
       sched:spawn(function() result = "inner" end)
