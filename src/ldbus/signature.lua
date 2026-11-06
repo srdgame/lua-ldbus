@@ -48,8 +48,8 @@ local function parse_one(sig)
     if not key then
       return nil, rest
     end
-    if not types.ALIGNMENT[key.code] or key.code == "a" then
-      return nil, "dict key must be a basic type: " .. key.code
+    if not types.ALIGNMENT[key.code] or key.code == "a" or key.code == "v" then
+      return nil, "dict key must be a basic (non-container) type: " .. key.code
     end
     local value, rest2 = parse_one(rest)
     if not value then

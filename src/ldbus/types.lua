@@ -46,7 +46,8 @@ types.ALIGNMENT = {
 --- Alignment of a complete type as it appears in a signature
 -- (structs and dict entries are always 8-aligned).
 -- `sig` may be a single type code or a full signature string
--- (for arrays: the element type governs).
+-- (for arrays this is the length-prefix alignment, 4; the element
+-- type's own alignment is applied separately by marshal).
 function types.alignment_of(sig)
   local first = sig:sub(1, 1)
   if first == "(" or first == "{" then
@@ -78,16 +79,25 @@ function types.is_complete_type(sig)
   return ok
 end
 
+--- Maximum type nesting depth per the D-Bus spec (arrays, structs and
+-- dict entries each count one level).
+types.MAX_DEPTH = 32
+
 --- Split the first complete type off a signature string.
 -- Returns `true, complete_type, rest` on success,
 -- `false, err_message` on failure.
-function types.split_complete_type(sig)
+-- `depth` is internal (container nesting so far).
+function types.split_complete_type(sig, depth)
+  depth = depth or 0
+  if depth > types.MAX_DEPTH then
+    return false, "type nesting too deep (max " .. types.MAX_DEPTH .. ")"
+  end
   if #sig == 0 then
     return false, "empty signature"
   end
   local c = sig:sub(1, 1)
   if c == "a" then
-    local ok, elem, rest = types.split_complete_type(sig:sub(2))
+    local ok, elem, rest = types.split_complete_type(sig:sub(2), depth + 1)
     if not ok then
       return false, "array missing element type: " .. sig
     end
@@ -105,7 +115,7 @@ function types.split_complete_type(sig)
         end
         return true, sig:sub(1, #sig - #rest + 1), rest:sub(2)
       end
-      local ok, field, rest2 = types.split_complete_type(rest)
+      local ok, field, rest2 = types.split_complete_type(rest, depth + 1)
       if not ok then
         return false, field
       end
@@ -113,18 +123,20 @@ function types.split_complete_type(sig)
       rest = rest2
     end
   elseif c == "{" then
-    local ok, key, rest = types.split_complete_type(sig:sub(2))
+    local ok, key, rest = types.split_complete_type(sig:sub(2), depth + 1)
     if not ok then
       return false, "dict entry missing key type: " .. sig
     end
-    local ok2, val, rest2 = types.split_complete_type(rest)
+    local ok2, val, rest2 = types.split_complete_type(rest, depth + 1)
     if not ok2 then
       return false, "dict entry missing value type: " .. sig
     end
     if rest2:sub(1, 1) ~= "}" then
       return false, "unterminated dict entry: " .. sig
     end
-    if #key ~= 1 or key == "a" or key == "(" or key == "{" then
+    -- keys must be basic types: single codes except containers and
+    -- variants (the spec explicitly forbids 'v' as a key)
+    if #key ~= 1 or not types.ALIGNMENT[key] or key == "a" or key == "v" then
       return false, "dict key must be a basic (non-container) type: " .. key
     end
     return true, sig:sub(1, #sig - #rest2 + 1), rest2:sub(2)
@@ -137,29 +149,40 @@ end
 
 --- Validate a full signature (zero or more complete types).
 -- Returns `true, n_types` or `false, err_message`.
+-- Per spec: max 255 bytes total; dict entries are only valid as
+-- elements of an array, never at the top level.
 function types.validate_signature(sig)
+  if #sig > 255 then
+    return false, "signature too long (max 255 bytes)"
+  end
   local n = 0
   local rest = sig
   while #rest > 0 do
-    local ok, _, rest2 = types.split_complete_type(rest)
+    local ok, complete, rest2 = types.split_complete_type(rest)
     if not ok then
       return false, rest2
     end
+    if complete:sub(1, 1) == "{" then
+      return false, "dict entry only valid inside an array: " .. complete
+    end
     n = n + 1
     rest = rest2
-  end
-  if n > 255 then
-    return false, "signature too long (max 255)"
   end
   return true, n
 end
 
 --- Table for tagging values that carry an explicit D-Bus signature.
 -- `dbus.variant(sig, value)` produces `{ _dbus_variant = true, signature = sig, value = value }`.
+-- `sig` must be exactly ONE complete type (a variant cannot hold a
+-- multi-type body).
 function types.variant(signature, value)
-  local ok, err = types.split_complete_type(signature)
+  local ok, _, rest = types.split_complete_type(signature)
   if not ok then
-    error("invalid variant signature '" .. tostring(signature) .. "': " .. err, 2)
+    error("invalid variant signature '" .. tostring(signature) .. "'", 2)
+  end
+  if #rest > 0 then
+    error("variant signature must be exactly one complete type: '"
+      .. tostring(signature) .. "'", 2)
   end
   if signature == "h" then
     error("unix fd type 'h' is not supported by ldbus", 2)
