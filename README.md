@@ -75,9 +75,107 @@ bus:mainloop{ timeout = 0.1 }
 
 See `examples/` for complete runnable scripts:
 
+- `examples/bluez/` — org.bluez (Bluetooth) wrapper library: adapters,
+  devices, discovery, properties as plain field access, signal-fed cache,
+  GATT client + server, and LE advertisements (see below)
+- `examples/bluetooth_scan.lua` — scan and list nearby LE devices
+- `examples/gatt_server_demo.lua` — GATT server (peripheral): counter
+  service, LE advertising with tunable parameters, notifications, and
+  runtime advertising-parameter changes
+- `examples/gatt_client_demo.lua` — GATT client (central): locate/connect,
+  dump the GATT hierarchy, read the battery, subscribe to notifications
 - `examples/server.lua` — calculator service (`dbus-send`-friendly)
 - `examples/call_systemd.lua` — ListUnits on the system bus
 - `examples/signal_monitor.lua` — session-bus lifecycle signals
+
+## Bluetooth (org.bluez)
+
+`require "bluez"` (from `examples/`) wraps the BlueZ D-Bus API. The cache is
+kept fresh by ObjectManager/Properties signals, so enumeration never does I/O.
+
+```lua
+local bluez = require "bluez"
+local bt = bluez.new()
+local adapter = bt:default_adapter()
+adapter.Powered = true                       -- property Set
+adapter:set_discovery_filter{ Transport = "le" }
+adapter:start_discovery()
+-- ... run a mainloop to receive signals ...
+for _, dev in ipairs(bt:devices()) do
+  print(dev:label(), dev.RSSI)               -- property Get from the cache
+end
+```
+
+### Adapter management (`bluez.adapter_mgmt`, loaded automatically)
+
+```lua
+adapter:set_powered(true)
+adapter:set_name("MyBox")                    -- Alias property
+print(adapter:display_name())
+adapter:set_discoverable(true, 30)           -- visible, 30 s windows
+adapter:set_pairable(true)
+print(adapter:get_discovery_filters()[1])
+
+-- one-call LE advertising (creates + registers an LEAdvertisement1)
+local adv = adapter:start_advertising{
+  local_name = "MyBox",
+  service_uuids = { "180f" },
+  min_interval = 100, max_interval = 200,    -- ms (BlueZ >= 5.64)
+}
+adv:update{ LocalName = "Renamed" }          -- runtime parameter change
+adapter:stop_advertising()
+```
+
+### GATT client (`bluez.gatt_client`, loaded automatically)
+
+```lua
+local svc = bt:find_service("180f")            -- short SIG UUIDs are expanded
+local bat = bt:find_characteristic("2a19", svc)
+local v = bat:read_value()                     -- ReadValue -> Lua string
+bat:write_value("\42")                         -- WriteValue
+local unsub = bat:subscribe(function(value)    -- StartNotify + listener
+  print("value:", value)
+end)
+-- ... mainloop ...
+unsub()
+```
+
+### GATT server + LE advertisement (`bluez.gatt_server`, loaded automatically)
+
+Exports local GATT objects on your connection and registers them with
+bluetoothd (`GattManager1` / `LEAdvertisingManager1`). A mainloop must be
+running while registered — bluetoothd calls back into the exported objects.
+
+```lua
+local app = bluez.Application(bt, "/com/example/gatt")
+local svc = app:service("180f")
+local bat = svc:characteristic("2a19", { "read", "write", "notify" }, {
+  value = "\42",                              -- cached value
+  on_read  = function(opts) return "\42" end, -- optional dynamic value
+  on_write = function(value, opts) ... end,
+})
+app:register(bt:default_adapter())
+
+local adv = bluez.Advertisement(bt, "/com/example/adv", {
+  local_name = "MyDevice",
+  service_uuids = { "180f" },
+  includes = { "tx-power" },               -- never combine "local-name"
+  discoverable = true,                     -- with local_name (BlueZ rejects)
+  discoverable_timeout = 30,               -- seconds, uint16 (BlueZ >= 5.54)
+  appearance = 962,                        -- uint16 (BlueZ >= 5.55)
+  duration = 4, timeout = 60,              -- seconds, uint16 (BlueZ >= 5.63)
+  min_interval = 100, max_interval = 200,  -- ms, uint32 (BlueZ >= 5.64);
+                                           -- min must be <= max
+  manufacturer_data = { [0x0059] = "\1\2" }, -- a{qv}: uint16 id -> bytes
+})
+adv:register(bt:default_adapter())
+adv:update{ LocalName = "Renamed" }        -- runtime parameter change;
+                                           -- uint16 properties need an
+                                           -- explicit variant:
+adv:update{ DiscoverableTimeout = ldbus.variant("q", 0) }
+
+bat:notify("\43")   -- push a new value to subscribed centrals
+```
 
 ## API summary
 
@@ -89,6 +187,7 @@ See `examples/` for complete runnable scripts:
 | `bus:object(path)` | Exported-object handle: `obj:method(member, in_sig, out_sig, fn)`, `obj:signal(member, sig)` |
 | `bus:emit(path, iface, member, sig_or_tbl, values)` | Emit a signal |
 | `bus:on_signal(iface, member, fn)` | Register a signal handler (member may be `nil` for interface-wide match) |
+| `bus:off_signal(iface, member, fn)` | Remove a previously registered handler (local only; no RemoveMatch is sent) |
 | `bus:request_name(name, flags)` / `bus:release_name(name)` | Well-known name ownership; returns `ldbus.result.*` |
 | `bus:pump(timeout)` / `bus:mainloop{...}` / `bus:quit()` | Event loop control |
 | `bus.conn` | Low-level connection (unique_name, pending, send, pump) |
