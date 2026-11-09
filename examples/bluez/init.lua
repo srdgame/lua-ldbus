@@ -304,15 +304,79 @@ function Device:disconnect_profile(uuid)
   return self:call("DisconnectProfile", { uuid }, { signature = "s" })
 end
 
+--------------------------------------------------------------------------------
+-- Device: common Device1 property accessors
+--------------------------------------------------------------------------------
+
+--- The device's Bluetooth MAC address (Address property).
+function Device:address()
+  return self:get_prop("Address")
+end
+
+--- The address type: "public", "random" or "anonymous".
+function Device:address_type()
+  return self:get_prop("AddressType")
+end
+
+--- The remote icon name (Icon property), e.g. "input-mouse"; may be nil.
+function Device:icon()
+  return self:get_prop("Icon")
+end
+
+--- Latest RSSI in dBm (RSSI property); nil once the device is connected
+-- (BlueZ drops the property when advertising stops).
+function Device:rssi()
+  return self:get_prop("RSSI")
+end
+
+--- Set the device's human-friendly name (Alias property). The alias is
+-- local to this machine; pass "" to reset to the remote Name.
+function Device:set_name(alias)
+  return self:set_prop("Alias", alias)
+end
+
 --- Display name: Alias, then Name, then the MAC address.
 function Device:label()
   return self:get_prop("Alias") or self:get_prop("Name")
-    or self:get_prop("Address") or self:path()
+    or self:address() or self:path()
 end
 
 --- True while the device reports a live connection.
 function Device:is_connected()
   return self:get_prop("Connected") == true
+end
+
+--- True once pairing has completed (Paired property).
+function Device:is_paired()
+  return self:get_prop("Paired") == true
+end
+
+--- True when all GATT services of the device have been resolved
+-- (ServicesResolved property).
+function Device:services_resolved()
+  return self:get_prop("ServicesResolved") == true
+end
+
+--- True when the device is trusted (Trusted property); trusted devices
+-- auto-reconnect without re-authorization.
+function Device:is_trusted()
+  return self:get_prop("Trusted") == true
+end
+
+--- Mark the device trusted/untrusted.
+function Device:set_trusted(on)
+  return self:set_prop("Trusted", on and true or false)
+end
+
+--- True when the device is blocked (Blocked property); blocked devices
+-- cannot connect or be connected.
+function Device:is_blocked()
+  return self:get_prop("Blocked") == true
+end
+
+--- Block/unblock the device.
+function Device:set_blocked(on)
+  return self:set_prop("Blocked", on and true or false)
 end
 
 --------------------------------------------------------------------------------

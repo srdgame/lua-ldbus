@@ -97,26 +97,37 @@ kept fresh by ObjectManager/Properties signals, so enumeration never does I/O.
 local bluez = require "bluez"
 local bt = bluez.new()
 local adapter = bt:default_adapter()
-adapter:set_prop("Powered", true)            -- property Set
+adapter:set_powered(true)                    -- property Set
 adapter:set_discovery_filter{ Transport = "le" }
 adapter:start_discovery()
 -- ... run a mainloop to receive signals ...
 for _, dev in ipairs(bt:devices()) do
-  print(dev:label(), dev:get_prop("RSSI"))   -- property Get from the cache
+  print(dev:label(), dev:rssi())             -- property Get from the cache
 end
 ```
 
-### Adapter property accessors and advertising
+### Adapter and Device property accessors
 
 ```lua
-adapter:set_powered(true)
-adapter:set_name("MyBox")                    -- Alias property
-print(adapter:display_name())
-adapter:set_discoverable(true, 30)           -- visible, 30 s windows
-adapter:set_pairable(true)
-print(adapter:get_discovery_filters()[1])
+-- Adapter1: address(), is_powered()/set_powered(on), is_discovering(),
+-- display_name()/set_name(alias), set_discoverable(on, timeout?),
+-- set_pairable(on, timeout?), get_discovery_filters()
+adapter:address()
+adapter:is_discovering()
 
--- one-call LE advertising (creates + registers an LEAdvertisement1)
+-- Device1: address(), address_type(), icon(), rssi(),
+-- set_name(alias)/display-name via label(), is_connected(), is_paired(),
+-- services_resolved(), is_trusted()/set_trusted(on),
+-- is_blocked()/set_blocked(on)
+local dev = bt:find_device("aa:bb:cc:dd:ee:ff")
+dev:set_trusted(true)
+print(dev:label(), dev:rssi(), dev:is_paired())
+```
+
+### One-call LE advertising
+
+```lua
+-- creates + registers an LEAdvertisement1
 local adv = adapter:start_advertising{
   local_name = "MyBox",
   service_uuids = { "180f" },

@@ -37,11 +37,11 @@ local devices = bt:devices(adapter)
 print(("%d device(s) seen:"):format(#devices))
 for _, dev in ipairs(devices) do
   print(("  %-17s  %-25s  RSSI %s  %s%s"):format(
-    dev:get_prop("Address") or "?",
+    dev:address() or "?",
     dev:label(),
-    tostring(dev:get_prop("RSSI") or "-"),
-    dev:get_prop("Paired") and "[paired] " or "",
-    dev:get_prop("Connected") and "[connected]" or ""))
+    tostring(dev:rssi() or "-"),
+    dev:is_paired() and "[paired] " or "",
+    dev:is_connected() and "[connected]" or ""))
 end
 
 bt:close()
