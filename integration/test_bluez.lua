@@ -168,8 +168,8 @@ ldbus.mainloop({ server, client_bus }, {
     -- 1) GetManagedObjects cache
     local adapter = assert(bt:default_adapter(), "no adapter in cache")
     equals("/org/bluez/hci0", adapter:path())
-    equals("00:11:22:33:44:55", adapter.Address)
-    equals(true, adapter.Powered)
+    equals("00:11:22:33:44:55", adapter:get_prop("Address"))
+    equals(true, adapter:get_prop("Powered"))
 
     local devs = bt:devices(adapter)
     equals(1, #devs)
@@ -185,8 +185,8 @@ ldbus.mainloop({ server, client_bus }, {
     equals(false, values)
     print("live Properties.Get ok")
 
-    -- 3) property Set via __newindex
-    adapter.Powered = false
+    -- 3) property Set via set_prop
+    adapter:set_prop("Powered", false)
     assert(#calls.set == 1, "Set not called")
     equals("org.bluez.Adapter1", calls.set[1].iface)
     equals("Powered", calls.set[1].name)

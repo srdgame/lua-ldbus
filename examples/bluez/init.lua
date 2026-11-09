@@ -1,21 +1,23 @@
 --- bluez: idiomatic Lua wrapper for the org.bluez D-Bus API (BlueZ 5).
 -- Built on ldbus (and middleclass for the class hierarchy), talks to the
--- system bus. Objects expose properties as plain field access
--- (`adapter.Powered`, `adapter.Powered = true`), and methods as regular
--- calls (`adapter:start_discovery()`). The ObjectManager view is cached
+-- system bus. Objects expose properties via explicit accessors
+-- (`adapter:get_prop("Powered")`, `adapter:set_prop("Powered", true)`)
+-- and methods as regular calls (`adapter:start_discovery()`). The
+-- ObjectManager view is cached
 -- and kept fresh via InterfacesAdded/InterfacesRemoved and
 -- PropertiesChanged signals, so `bt:devices()` never does I/O.
 --
--- This is the core module: adapter/device enumeration and control.
+-- This is the core module: adapter/device enumeration and control,
+-- Adapter1 property accessors and the one-call LE advertising toggle.
 -- GATT client helpers live in `bluez.gatt_client`; GATT server and LE
--- advertisement support lives in `bluez.gatt_server`; adapter management
--- (name, power, discoverability, one-call advertising) in
--- `bluez.adapter_mgmt`. All are loaded automatically.
+-- advertisement support lives in `bluez.gatt_server`. Both are loaded
+-- automatically.
 --
 -- Usage:
 --   local bluez = require "bluez"
 --   local bt = bluez.new()
 --   local adapter = bt:default_adapter()
+--   adapter:set_prop("Powered", true)
 --   adapter:start_discovery()
 --   for _, dev in ipairs(bt:devices()) do print(dev:label()) end
 --
@@ -103,7 +105,7 @@ local function expand_uuid(uuid)
 end
 
 --------------------------------------------------------------------------------
--- Object: shared base for Adapter and Device (property access via __index)
+-- Object: shared base for Adapter and Device (explicit property accessors)
 --------------------------------------------------------------------------------
 
 local Object = middleclass("Object")
@@ -112,27 +114,6 @@ function Object:initialize(bt, path, iface)
   self._bt = bt
   self._path = path
   self._iface = iface
-end
-
--- Declared as a middleclass instance method, so real methods win first
--- and only unknown keys fall through here. Uppercase-initial keys resolve
--- to D-Bus properties (`adapter.Powered`).
-function Object:__index(k)
-  if type(k) == "string" and k:sub(1, 1):match("^%u") then
-    return self:get_prop(k)
-  end
-  return nil
-end
-
--- `obj.SomeProperty = value` becomes a Properties.Set call; any other
--- field assignment stores a plain instance field (middleclass routes
--- every assignment through here, including initialize's own setup).
-function Object:__newindex(k, v)
-  if type(k) == "string" and k:sub(1, 1):match("^%u") then
-    self:set_prop(k, v)
-  else
-    rawset(self, k, v)
-  end
 end
 
 --- The D-Bus object path of this adapter/device.
@@ -208,6 +189,83 @@ end
 function Adapter:remove_device(dev)
   local path = type(dev) == "table" and dev:path() or dev
   return self:call("RemoveDevice", { path }, { signature = "o" })
+end
+
+--------------------------------------------------------------------------------
+-- Adapter: common Adapter1 property accessors
+--------------------------------------------------------------------------------
+
+--- The adapter's Bluetooth MAC address (Address property).
+function Adapter:address()
+  return self:get_prop("Address")
+end
+
+--- True when the adapter is powered on.
+function Adapter:is_powered()
+  return self:get_prop("Powered") == true
+end
+
+--- Power the adapter on/off.
+function Adapter:set_powered(on)
+  return self:set_prop("Powered", on and true or false)
+end
+
+--- True while a discovery scan is running on this adapter.
+function Adapter:is_discovering()
+  return self:get_prop("Discovering") == true
+end
+
+--- Set the adapter's human-friendly name (Alias property).
+function Adapter:set_name(alias)
+  return self:set_prop("Alias", alias)
+end
+
+--- Current display name: Alias, then Name. (Named `display_name` because
+-- `name` collides with middleclass's internal class-name attribute.)
+function Adapter:display_name()
+  return self:get_prop("Alias") or self:get_prop("Name")
+end
+
+--- Enable/disable discoverability. `timeout` is the visibility window in
+-- seconds (0 = always discoverable); omit it to leave the timeout unchanged.
+function Adapter:set_discoverable(on, timeout)
+  local ok, err = self:set_prop("Discoverable", on and true or false)
+  if not ok then
+    return nil, err
+  end
+  if timeout ~= nil then
+    ok, err = self:set_prop("DiscoverableTimeout", timeout)
+    if not ok then
+      return nil, err
+    end
+  end
+  return true
+end
+
+--- Enable/disable pairability. `timeout` is the pairable window in
+-- seconds (0 = always pairable); omit it to leave the timeout unchanged.
+function Adapter:set_pairable(on, timeout)
+  local ok, err = self:set_prop("Pairable", on and true or false)
+  if not ok then
+    return nil, err
+  end
+  if timeout ~= nil then
+    ok, err = self:set_prop("PairableTimeout", timeout)
+    if not ok then
+      return nil, err
+    end
+  end
+  return true
+end
+
+--- The currently active discovery filters (org.bluez.Adapter1
+-- .GetDiscoveryFilters). Returns a list, or nil + err.
+function Adapter:get_discovery_filters()
+  local values, err = self:call("GetDiscoveryFilters")
+  if not values then
+    return nil, err
+  end
+  return values[1]
 end
 
 --------------------------------------------------------------------------------
@@ -418,7 +476,7 @@ end
 --------------------------------------------------------------------------------
 
 bluez.new = function(opts)
-  return Bluez:new(opts)
+  return Bluez(opts)
 end
 
 bluez.Bluez = Bluez
@@ -437,6 +495,53 @@ bluez.auto_variant = auto_variant
 package.loaded["bluez"] = bluez
 pcall(require, "bluez.gatt_client")
 pcall(require, "bluez.gatt_server")
-pcall(require, "bluez.adapter_mgmt")
+
+--------------------------------------------------------------------------------
+-- Adapter: one-call LE advertising toggle (uses bluez.Advertisement
+-- from bluez.gatt_server, so defined after the submodules load)
+--------------------------------------------------------------------------------
+
+--- Create and register an LE advertisement on this adapter in one call.
+-- `opts` is passed straight to bluez.Advertisement (local_name,
+-- service_uuids, includes, min_interval/max_interval, ...). Calling it
+-- again while advertising returns the existing handle unchanged.
+-- Requires a running mainloop while registered.
+function Adapter:start_advertising(opts)
+  local bt = self._bt
+  bt._advertisements = bt._advertisements or {}
+  local existing = bt._advertisements[self._path]
+  if existing then
+    return existing
+  end
+  if not bluez.Advertisement then
+    return nil, { name = "org.bluez.Error.NotSupported",
+                  message = "bluez.gatt_server not available" }
+  end
+  local path = self._path .. "/lua_adv"
+  local adv = bluez.Advertisement(bt, path, opts)
+  local ok, err = adv:register(self)
+  if not ok then
+    return nil, err
+  end
+  bt._advertisements[self._path] = adv
+  return adv
+end
+
+--- Unregister the advertisement started with :start_advertising.
+-- Returns true, or nil + err (including when not currently advertising).
+function Adapter:stop_advertising()
+  local advs = self._bt._advertisements
+  local adv = advs and advs[self._path]
+  if not adv then
+    return nil, { name = "org.bluez.Error.DoesNotExist",
+                  message = "no active advertisement for " .. self._path }
+  end
+  local ok, err = adv:unregister(self)
+  if not ok then
+    return nil, err
+  end
+  advs[self._path] = nil
+  return true
+end
 
 return bluez

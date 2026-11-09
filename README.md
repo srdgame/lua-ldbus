@@ -97,16 +97,16 @@ kept fresh by ObjectManager/Properties signals, so enumeration never does I/O.
 local bluez = require "bluez"
 local bt = bluez.new()
 local adapter = bt:default_adapter()
-adapter.Powered = true                       -- property Set
+adapter:set_prop("Powered", true)            -- property Set
 adapter:set_discovery_filter{ Transport = "le" }
 adapter:start_discovery()
 -- ... run a mainloop to receive signals ...
 for _, dev in ipairs(bt:devices()) do
-  print(dev:label(), dev.RSSI)               -- property Get from the cache
+  print(dev:label(), dev:get_prop("RSSI"))   -- property Get from the cache
 end
 ```
 
-### Adapter management (`bluez.adapter_mgmt`, loaded automatically)
+### Adapter property accessors and advertising
 
 ```lua
 adapter:set_powered(true)

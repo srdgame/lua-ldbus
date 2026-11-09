@@ -13,11 +13,11 @@ local adapter = bt:default_adapter()
 if not adapter then
   error("no Bluetooth adapter found (is bluetoothd running?)")
 end
-print(("adapter %s at %s"):format(adapter.Address or "?", adapter:path()))
+print(("adapter %s at %s"):format(adapter:address() or "?", adapter:path()))
 
-if not adapter.Powered then
+if not adapter:get_prop("Powered") then
   print("powering adapter on...")
-  adapter.Powered = true
+  adapter:set_prop("Powered", true)
 end
 
 -- Low-energy scan; drop the filter for BR/EDR too.
