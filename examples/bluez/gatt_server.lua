@@ -65,7 +65,8 @@ end
 
 local LocalCharacteristic = middleclass("LocalCharacteristic")
 
-function LocalCharacteristic:initialize(service, uuid, path, flags, handlers)  handlers = handlers or {}
+function LocalCharacteristic:initialize(service, uuid, path, flags, handlers)
+  handlers = handlers or {}
   self.service = service
   self.uuid = uuid
   self._path = path
