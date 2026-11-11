@@ -225,10 +225,47 @@ Integration uses `dbus-run-session`, so it exercises the real protocol stack:
 Hello, method dispatch (success / Lua error / UnknownMethod), NO_REPLY_EXPECTED,
 introspection XML, signal matching, and nested yielding calls across services.
 
+## Unix fd passing (type `h`)
+
+Messages may carry at most **one** unix fd (lsocket carries one fd per
+`sendmsg`/`recvmsg`). Authentication negotiates `NEGOTIATE_UNIX_FD` with the
+bus, so fd passing works on connections whose daemon supports it.
+
+Sending — pass the fd via `opts.fds`; the body's `h` value is just a
+placeholder (the fd index is filled in automatically):
+
+```lua
+local fd = some_socket:getfd()
+bus:call(dest, "/x", "com.example.I", "TakeFd", { 0 },
+         { signature = "h", fds = { fd } })
+```
+
+Receiving — a body `h` decodes directly to the real fd (an integer), and
+`msg.fds` holds the fd list. The receiver owns the fd and must close it:
+
+```lua
+bus:on_signal("com.example.I", "FdReady", function(msg)
+  local sock = lsocket.wrapfd(msg.body[1])
+  local data = sock:recv()
+  sock:close()
+end)
+```
+
+Notes:
+
+- Sending a message whose signature has `h` without `opts.fds` (or with
+  more than one fd) raises an error.
+- An incoming message claiming more than one fd is treated as a protocol
+  error and the connection is dropped (the extra fds cannot be recovered
+  on this transport).
+- Router method handlers cannot return fds; reply manually with
+  `bus.conn:send{ type = "method_return", ..., signature = "h",
+  body = { 0 }, fds = { fd } }` (see `integration/test_fds.lua`).
+
 ## Limitations
 
 - Little-endian hosts only (big-endian peers would need the other encoder)
-- Unix fd passing (type `h`) is rejected at signature validation
+- At most one unix fd per message (send errors; inbound `n_fds > 1` disconnects)
 - uint64 values ≥ 2^63 wrap (Lua 5.4 integers are signed 64-bit)
 - SASL `EXTERNAL` auth only; other mechanisms (DBUS_COOKIE_SHA1) unsupported
 - Single-threaded cooperative mainloop (coroutines, not OS threads)

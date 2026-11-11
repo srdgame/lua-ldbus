@@ -1,7 +1,10 @@
 --- Bus connection: serials, pending replies, blocking pump, dispatch.
 -- Works over any "io" object providing:
 --   send(bytes)                    -> true | nil, err
---   recv()                         -> string | false | nil, err
+--   send_with_fds(bytes, fds)      -> true | nil, err (SCM_RIGHTS)
+--   recv()                         -> chunk, fd | false | nil, err
+--                                     (fd is nil unless an SCM_RIGHTS
+--                                     fd arrived with this chunk)
 --   wait_readable(timeout)         -> true | false (false = timeout)
 --   close()
 -- @module ldbus.connection
@@ -30,8 +33,16 @@ local function lsocket_io(sock)
     send = function(_, bytes)
       return socketio.send_all(sock, bytes)
     end,
+    send_with_fds = function(_, bytes, fds)
+      if #fds == 0 then
+        return socketio.send_all(sock, bytes)
+      end
+      -- ldbus never sends more than one fd per message (enforced in
+      -- message.build), so exactly the first fd is carried here
+      return socketio.send_with_fd(sock, bytes, fds[1])
+    end,
     recv = function(_)
-      return socketio.recv(sock)
+      return socketio.recvfd(sock)
     end,
     wait_readable = function(_, timeout)
       local r = lsocket.select({ sock }, timeout)
@@ -56,6 +67,7 @@ function Connection:initialize(io)
   self.unique_name = nil
   self.pending = {}      -- serial -> callback(reply_msg)
   self.signal_handlers = {} -- filled in by router.lua
+  self._fd_queue = {}    -- fds received before their message frame
   self.closed = false
   self.loop_mode = false -- set by mainloop; call() yields instead of blocking
   self.on_message = nil  -- hook used by router/mainloop
@@ -130,7 +142,7 @@ function Connection:authenticate()
   if not id then
     return nil, err
   end
-  local guid, aerr = auth.negotiate({
+  local guid, fd_capable, aerr = auth.negotiate({
     send = function(_, s)
       return self.io:send(s)
     end,
@@ -142,7 +154,8 @@ function Connection:authenticate()
     return nil, aerr
   end
   self.guid = guid
-  return guid
+  self.fd_capable = fd_capable
+  return guid, fd_capable
 end
 
 --- Send Hello and store our unique bus name.
@@ -160,10 +173,12 @@ end
 --------------------------------------------------------------------------------
 
 --- Send a complete message table (see message.build opts).
+-- `opts.fds` (0 or 1 unix fd, matching 'h' values in the signature)
+-- is passed to the transport via send_with_fds.
 -- Returns true or nil + error message.
 function Connection:send(opts)
   opts.serial = opts.serial or self:next_serial()
-  local ok, err = self.io:send(message.build(opts))
+  local ok, err = self.io:send_with_fds(message.build(opts), opts.fds or {})
   if not ok then
     self.closed = true
     return nil, err
@@ -183,11 +198,36 @@ function Connection:_recv_message()
   if not total then
     return nil, reason
   end
-  local raw = self.buf:take(total)
+  local raw = self.buf:peek(total)
   if not raw then
     return false
   end
-  return message.parse(raw)
+  local n_fds = message.fd_count(raw)
+  if n_fds > 1 then
+    -- the extra fds were truncated away by the transport (lsocket
+    -- carries at most one fd per recvmsg), so the message is unusable
+    self.closed = true
+    return nil, "message carries " .. n_fds
+      .. " fds, but this transport supports at most 1 (message dropped)"
+  end
+  local fds
+  if n_fds > 0 then
+    if #self._fd_queue < n_fds then
+      -- the fd may arrive after the frame tail; keep reading (the
+      -- frame stays buffered via peek)
+      return false
+    end
+    fds = {}
+    for _ = 1, n_fds do
+      fds[#fds + 1] = table.remove(self._fd_queue, 1)
+    end
+  end
+  raw = self.buf:take(total)
+  local msg, err = message.parse(raw, fds)
+  if msg then
+    msg.fds = fds or {}
+  end
+  return msg, err
 end
 
 --- Read from io into the buffer once (waiting up to timeout).
@@ -197,13 +237,16 @@ function Connection:_read_once(timeout)
   if not readable then
     return false
   end
-  local chunk, err = self.io:recv()
+  local chunk, fd = self.io:recv()
   if chunk == nil then
     self.closed = true
-    error("connection closed while reading: " .. tostring(err), 0)
+    error("connection closed while reading: " .. tostring(fd), 0)
   end
   if chunk == false then
     return false
+  end
+  if fd ~= nil then
+    self._fd_queue[#self._fd_queue + 1] = fd
   end
   self.buf:feed(chunk)
   return true
@@ -309,6 +352,7 @@ function Connection:call(dest, path, iface, member, args, opts)
     destination = dest,
     signature = opts.signature or "",
     body = args,
+    fds = opts.fds,
   })
 
   -- register a trivial reply collector
@@ -337,6 +381,7 @@ function Connection:call_noreply(dest, path, iface, member, args, opts)
     destination = dest,
     signature = opts.signature or "",
     body = args,
+    fds = opts.fds,
     flags = message.FLAG.NO_REPLY_EXPECTED,
   })
 end

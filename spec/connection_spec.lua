@@ -1,5 +1,8 @@
 local Connection = require "ldbus.connection"
 local message = require "ldbus.message"
+local marshal = require "ldbus.marshal"
+local types = require "ldbus.types"
+local signature = require "ldbus.signature"
 local mock = require "mock_socket"
 
 --- Build a mock io wired to a Connection, with the given scripted
@@ -136,6 +139,76 @@ describe("ldbus.connection", function()
       conn:close()
       assert.is_true(conn.closed)
       assert.is_true(conn.io.closed)
+    end)
+  end)
+
+  describe("unix fd passing", function()
+    --- Build wire bytes for a signal carrying one fd.
+    local function fd_msg(serial, fd)
+      return message.build({
+        type = "signal", serial = serial, path = "/fd",
+        interface = "com.x.I", member = "Fd",
+        signature = "h", body = { 0 }, fds = { fd },
+      })
+    end
+
+    --- Craft a message whose header claims 2 fds (a protocol violation;
+    -- message.build refuses, so forge the UNIX_FDS field directly).
+    local function two_fd_msg()
+      local field_entry = signature.parse("(yv)")[1]
+      local fields_data = marshal.encode(
+        { field_entry }, { { 9, types.variant("u", 2) } }, 16)
+      local fields_len = #fields_data
+      local pad = (8 - (16 + fields_len) % 8) % 8
+      local fixed = string.pack("<BBBB I4 I4 I4",
+        string.byte("l"), message.TYPE.SIGNAL, 0, 1, 0, 1, fields_len)
+      return fixed .. fields_data .. string.rep("\0", pad)
+    end
+
+    it("delivers msg.fds and resolves body indices when fd arrives with the frame", function()
+      local conn = new_conn({})
+      conn.buf:feed(fd_msg(1, 7))
+      conn.io:feed_fd(7)
+      local seen = {}
+      conn.on_message = function(msg) seen[#seen + 1] = msg end
+      conn:pump(0)
+      assert.equals(1, #seen)
+      assert.same({ 7 }, seen[1].fds)
+      assert.same({ 7 }, seen[1].body)
+    end)
+
+    it("waits for an fd that arrives after the frame bytes", function()
+      local conn = new_conn({})
+      conn.buf:feed(fd_msg(1, 7))
+      conn.io:feed_fd(7) -- delivered by the next recv() only
+      local seen = {}
+      conn.on_message = function(msg) seen[#seen + 1] = msg end
+      conn:pump(0.05)
+      assert.equals(1, #seen)
+      assert.same({ 7 }, seen[1].fds)
+      assert.same({ 7 }, seen[1].body)
+    end)
+
+    it("raises a protocol error when a message claims more than one fd", function()
+      local conn = new_conn({})
+      conn.buf:feed(two_fd_msg())
+      local ok, err = pcall(function() conn:pump(0) end)
+      assert.falsy(ok)
+      assert.truthy(tostring(err):find("2 fds"))
+    end)
+
+    it("sends fds from opts.fds via send_with_fds", function()
+      local conn = new_conn({})
+      conn:send({
+        type = message.TYPE.METHOD_CALL, path = "/p",
+        interface = "a.b.I", member = "Take",
+        signature = "h", body = { 0 },
+        fds = { 7 },
+      })
+      assert.same({ 7 }, conn.io.sent_fds)
+      local outgoing = message.parse(conn.io:sent(), { 7 })
+      assert.equals(1, outgoing.n_fds)
+      assert.same({ 7 }, outgoing.body)
     end)
   end)
 end)

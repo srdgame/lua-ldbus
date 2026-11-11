@@ -94,6 +94,8 @@ end
 --   signature    body signature string ("" or nil for no body)
 --   body         list of values matching signature
 --   flags        number (message.FLAG bits)
+--   fds          list of unix fds to attach (SCM_RIGHTS); must match
+--                the number of 'h' values in the signature (max 1)
 -- Returns the full wire bytes.
 function message.build(opts)
   local mtype = opts.type
@@ -114,6 +116,19 @@ function message.build(opts)
       error("body signature '" .. opts.signature .. "' given without body values", 2)
     end
     body = marshal.encode_signature(opts.signature, opts.body)
+  end
+
+  -- validate fds against the signature's 'h' count
+  local fds = opts.fds or {}
+  local n_fds_wanted = marshal.count_fds(opts.signature or "")
+  if #fds ~= n_fds_wanted then
+    error(string.format(
+      "signature '%s' encodes %d fd(s) but %d were given"
+        .. " (body fd indices are filled in automatically)",
+      tostring(opts.signature or ""), n_fds_wanted, #fds), 2)
+  end
+  if #fds > 1 then
+    error("at most one fd per message (lsocket SCM_RIGHTS limit)", 2)
   end
 
   -- collect header fields
@@ -145,6 +160,9 @@ function message.build(opts)
   if opts.signature and #opts.signature > 0 then
     set_field(message.FIELD.SIGNATURE, opts.signature)
   end
+  if #fds > 0 then
+    set_field(message.FIELD.UNIX_FDS, #fds)
+  end
 
   -- Header field entries are placed at wire offset 16, back to back.
   -- The array length lives ONLY in fixed header bytes 12-15: the fields
@@ -173,12 +191,51 @@ function message.build(opts)
   return fixed .. fields_data .. string.rep("\0", pad) .. body
 end
 
+--- Decode the header-fields array of a complete message into
+-- `{ [field_key] = variant_value }`. Returns the table or nil + error.
+local function parse_fields(data, fields_len)
+  -- The fields region holds raw (yv) entries starting at offset 16, with
+  -- no array length prefix (see build). Reconstruct the standard a(yv)
+  -- framing (length + mandatory pad before the first entry) so the normal
+  -- decoder can walk it; offsets stay 8-aligned either way. The length
+  -- excludes the padding, per spec.
+  local fields_raw = string.pack("<I4", fields_len) .. "\0\0\0\0"
+    .. data:sub(FIXED_HEADER_LEN + 1, FIXED_HEADER_LEN + fields_len)
+  local entries, fields_err = marshal.decode_signature(FIELD_SIGNATURE, fields_raw)
+  if not entries then
+    return nil, "invalid header fields: " .. tostring(fields_err)
+  end
+  return entries[1] or {}
+end
+
+--- Number of unix fds the message carries (0 when the UNIX_FDS field
+-- is absent). Reads only the fixed header and header fields; the body
+-- is not decoded, so this is safe to call on a partially delivered
+-- frame whose body references not-yet-received fds.
+function message.fd_count(data)
+  if #data < FIXED_HEADER_LEN then
+    return 0
+  end
+  local _, _, fields_len = string.unpack("<I4I4I4", data, 5)
+  if #data < FIXED_HEADER_LEN + fields_len then
+    return 0
+  end
+  local fields = parse_fields(data, fields_len)
+  local v = fields[message.FIELD.UNIX_FDS]
+  if types.is_variant(v) then
+    return v.value
+  end
+  return v or 0
+end
+
 --- Parse a complete message.
--- Returns a message table:
+-- `fds` is the message's fd array (SCM_RIGHTS); body 'h' values are
+-- resolved to real fds through it. Returns a message table:
 --   { type, type_name, flags, serial, reply_serial, path, interface,
---     member, error_name, destination, sender, signature, body, body_len }
+--     member, error_name, destination, sender, signature, body,
+--     body_len, n_fds, fds }
 -- or nil + error message.
-function message.parse(data)
+function message.parse(data, fds)
   if #data < FIXED_HEADER_LEN then
     return nil, "message too short"
   end
@@ -196,19 +253,10 @@ function message.parse(data)
     return nil, "message data truncated"
   end
 
-  -- The fields region holds raw (yv) entries starting at offset 16, with
-  -- no array length prefix (see build). Reconstruct the standard a(yv)
-  -- framing (length + mandatory pad before the first entry) so the normal
-  -- decoder can walk it; offsets stay 8-aligned either way. The length
-  -- excludes the padding, per spec.
-  local fields_raw = string.pack("<I4", fields_len) .. "\0\0\0\0"
-    .. data:sub(FIXED_HEADER_LEN + 1, FIXED_HEADER_LEN + fields_len)
-  local entries, fields_err = marshal.decode_signature(FIELD_SIGNATURE, fields_raw)
-  if not entries then
-    return nil, "invalid header fields: " .. tostring(fields_err)
+  local fields, fields_err = parse_fields(data, fields_len)
+  if not fields then
+    return nil, fields_err
   end
-  -- dict decode keys by field code; values are variants (unwrapped below)
-  local fields = entries[1] or {}
 
   -- header field values are variants; unwrap them
   local function field(key)
@@ -220,6 +268,7 @@ function message.parse(data)
   end
 
   local body_start = types.pad_to(FIXED_HEADER_LEN + fields_len, 8)
+  local n_fds = field(message.FIELD.UNIX_FDS) or 0
   local msg = {
     type = mtype,
     type_name = message.TYPE_NAME[mtype],
@@ -234,6 +283,8 @@ function message.parse(data)
     destination = field(message.FIELD.DESTINATION),
     sender = field(message.FIELD.SENDER),
     signature = field(message.FIELD.SIGNATURE) or "",
+    n_fds = n_fds,
+    fds = fds,
   }
 
   if msg.type == message.TYPE.METHOD_CALL and not msg.path then
@@ -245,7 +296,7 @@ function message.parse(data)
       return nil, "message body present without SIGNATURE field"
     end
     local body_raw = data:sub(body_start + 1, body_start + body_len)
-    local values, err = marshal.decode_signature(msg.signature, body_raw)
+    local values, err = marshal.decode_signature(msg.signature, body_raw, fds)
     if not values then
       return nil, "invalid message body: " .. err
     end

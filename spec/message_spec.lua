@@ -138,6 +138,58 @@ describe("ldbus.message", function()
     end)
   end)
 
+  describe("unix fd (UNIX_FDS field)", function()
+    it("round-trips one fd through UNIX_FDS + body", function()
+      local data = message.build({
+        type = "method_call", serial = 20, path = "/x",
+        interface = "com.x.I", member = "TakeFd",
+        signature = "h", body = { 0 },
+        fds = { 7 },
+      })
+      local msg = message.parse(data, { 7 })
+      assert.equals(1, msg.n_fds)
+      assert.same({ 7 }, msg.fds)
+      assert.same({ 7 }, msg.body) -- 'h' index 0 resolved to real fd 7
+    end)
+
+    it("fd_count reads UNIX_FDS without decoding the body", function()
+      local data = message.build({
+        type = "method_call", serial = 20, path = "/x",
+        interface = "com.x.I", member = "TakeFd",
+        signature = "h", body = { 0 },
+        fds = { 7 },
+      })
+      assert.equals(1, message.fd_count(data))
+      -- a message without fds reports 0
+      local plain = message.build({
+        type = "method_call", serial = 21, path = "/x",
+        interface = "com.x.I", member = "Ping",
+      })
+      assert.equals(0, message.fd_count(plain))
+    end)
+
+    it("build errors when signature has 'h' but no fds given", function()
+      assert.has_error(function()
+        message.build({
+          type = "method_call", serial = 21, path = "/x",
+          interface = "com.x.I", member = "TakeFd",
+          signature = "h", body = { 0 },
+        })
+      end)
+    end)
+
+    it("build errors when more than one fd is passed", function()
+      assert.has_error(function()
+        message.build({
+          type = "method_call", serial = 22, path = "/x",
+          interface = "com.x.I", member = "TakeFd",
+          signature = "h", body = { 0 },
+          fds = { 7, 8 },
+        })
+      end)
+    end)
+  end)
+
   describe("parse errors", function()
     it("rejects short data", function()
       local msg, err = message.parse("\1\1\0\1")

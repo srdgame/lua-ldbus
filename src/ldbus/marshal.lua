@@ -42,9 +42,12 @@ local Encoder = middleclass("Encoder")
 
 --- `start_pos` is the absolute wire offset this buffer begins at, so
 -- sub-buffers (array bodies) keep correct relative alignment.
+-- `nfds` counts 'h' values encoded so far: each becomes a 0-based
+-- index into the message's fd array.
 function Encoder:initialize(start_pos)
   self.chunks = {}
   self.pos = start_pos or 0
+  self.nfds = 0
 end
 
 function Encoder:write(s)
@@ -92,6 +95,12 @@ local function encode_node(node, value, enc)
   elseif code == "u" then
     enc:align(4)
     enc:pack("<I4", check_range(check_int(value, code), 0, 4294967295, code))
+  elseif code == "h" then
+    -- unix fd: the wire value is a 0-based index into the message's
+    -- fd array; the real fd is carried out-of-band by the transport
+    enc:align(4)
+    enc.nfds = enc.nfds + 1
+    enc:pack("<I4", enc.nfds - 1)
   elseif code == "x" then
     enc:align(8)
     enc:pack("<i8", check_int(value, code))
@@ -133,9 +142,6 @@ local function encode_node(node, value, enc)
       error("variant value must be created with ldbus.variant(sig, value)", 3)
     end
     local inner_sig = value.signature
-    if inner_sig == "h" then
-      error("unix fd type 'h' is not supported by ldbus", 3)
-    end
     local inner_nodes = signature.parse(inner_sig)
     if not inner_nodes then
       error("invalid variant signature: " .. tostring(inner_sig), 3)
@@ -266,7 +272,7 @@ function Decoder:read(n)
   return s
 end
 
-local function decode_node(node, dec)
+local function decode_node(node, dec, fds)
   local code = node.code
 
   if code == "y" then
@@ -290,6 +296,15 @@ local function decode_node(node, dec)
   elseif code == "u" then
     dec:align(4)
     return dec:unpack("<I4")
+  elseif code == "h" then
+    dec:align(4)
+    local idx = dec:unpack("<I4")
+    local fd = fds and fds[idx + 1]
+    if fd == nil then
+      error("unix fd index " .. idx .. " out of range (received "
+        .. (fds and #fds or 0) .. " fds)")
+    end
+    return fd
   elseif code == "x" then
     dec:align(8)
     return dec:unpack("<i8")
@@ -311,12 +326,12 @@ local function decode_node(node, dec)
     dec:read(1) -- trailing NUL
     return s
   elseif code == "v" then
-    local inner_sig = decode_node({ code = "g" }, dec)
+    local inner_sig = decode_node({ code = "g" }, dec, fds)
     local inner_nodes = signature.parse(inner_sig)
     if not inner_nodes then
       error("invalid variant signature in data: " .. tostring(inner_sig))
     end
-    local value = decode_node(inner_nodes[1], dec)
+    local value = decode_node(inner_nodes[1], dec, fds)
     return types.variant(inner_sig, value)
   elseif code == "a" then
     dec:align(4)
@@ -333,8 +348,8 @@ local function decode_node(node, dec)
     if node.elem.code == "e" then
       while dec.pos < end_pos do
         dec:align(elem_align)
-        local k = decode_node(node.elem.key, dec)
-        local v = decode_node(node.elem.value, dec)
+        local k = decode_node(node.elem.key, dec, fds)
+        local v = decode_node(node.elem.value, dec, fds)
         result[k] = v
       end
     else
@@ -342,7 +357,7 @@ local function decode_node(node, dec)
       while dec.pos < end_pos do
         dec:align(elem_align)
         i = i + 1
-        result[i] = decode_node(node.elem, dec)
+        result[i] = decode_node(node.elem, dec, fds)
       end
     end
     if dec.pos ~= end_pos then
@@ -353,7 +368,7 @@ local function decode_node(node, dec)
     dec:align(8)
     local result = {}
     for i, field in ipairs(node.fields) do
-      result[i] = decode_node(field, dec)
+      result[i] = decode_node(field, dec, fds)
     end
     return result
   else
@@ -362,12 +377,13 @@ local function decode_node(node, dec)
 end
 
 --- Decode `data` (a body string) against a list of signature nodes.
+-- `fds` is the message's fd array ('h' values index into it).
 -- Returns `values` (a list) or `nil, err`.
-function marshal.decode(nodes, data)
+function marshal.decode(nodes, data, fds)
   local dec = Decoder(data)
   local values = {}
   for i, node in ipairs(nodes) do
-    local ok, v = pcall(decode_node, node, dec)
+    local ok, v = pcall(decode_node, node, dec, fds)
     if not ok then
       return nil, tostring(v)
     end
@@ -387,13 +403,22 @@ function marshal.encode_signature(sig, values)
 end
 
 --- Parse a signature and decode data in one step.
+-- `fds` supplies the fd array for 'h' values (see decode).
 -- Returns `values` or `nil, err`.
-function marshal.decode_signature(sig, data)
+function marshal.decode_signature(sig, data, fds)
   local nodes, err = signature.parse(sig)
   if not nodes then
     return nil, err
   end
-  return marshal.decode(nodes, data)
+  return marshal.decode(nodes, data, fds)
+end
+
+--- Number of unix fd ('h') values a signature encodes.
+-- 'h' can only appear as a type code in a signature, so counting
+-- occurrences is exact.
+function marshal.count_fds(sig)
+  local _, n = sig:gsub("h", "")
+  return n
 end
 
 return marshal

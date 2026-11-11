@@ -4,9 +4,9 @@
 --   array:      { code = "a", elem = node }
 --   struct:     { code = "r", fields = { node, ... } }
 --   dict entry: { code = "e", key = node, value = node }
--- The unix fd type 'h' parses but is rejected when used in
--- marshal/unmarshal (see marshal.lua), and rejected outright by
--- signature.parse for method signatures (see error policy below).
+-- The unix fd type 'h' encodes/decodes as a uint32 index into the
+-- message's fd array (see marshal.lua; real fds are supplied by the
+-- transport layer).
 -- @module ldbus.signature
 
 local types = require "ldbus.types"
@@ -66,28 +66,8 @@ local function parse_one(sig)
   end
 end
 
---- True if the node tree contains a unix fd ('h') anywhere.
-local function contains_fd(node)
-  if node.code == "h" then
-    return true
-  elseif node.code == "a" then
-    return contains_fd(node.elem)
-  elseif node.code == "r" then
-    for _, f in ipairs(node.fields) do
-      if contains_fd(f) then
-        return true
-      end
-    end
-    return false
-  elseif node.code == "e" then
-    return contains_fd(node.key) or contains_fd(node.value)
-  end
-  return false
-end
-
 --- Parse a full signature into a list of nodes.
 -- Returns `nodes, err` where `nodes` is `{ node, ... }` (possibly empty).
--- Unix fd ('h') is rejected at parse time with a descriptive error.
 function signature.parse(sig)
   local nodes = {}
   local rest = sig
@@ -95,9 +75,6 @@ function signature.parse(sig)
     local node, rest2 = parse_one(rest)
     if not node then
       return nil, "invalid signature '" .. sig .. "': " .. tostring(rest2)
-    end
-    if contains_fd(node) then
-      return nil, "unix fd type 'h' is not supported by ldbus: " .. sig
     end
     nodes[#nodes + 1] = node
     rest = rest2

@@ -75,17 +75,58 @@ function socketio.send_all(sock, data)
   return true
 end
 
---- One recv; returns a string chunk, or false when no data is ready,
---- or nil + error message on socket error.
-function socketio.recv(sock)
-  local chunk, err = sock:recv()
-  if chunk == nil then
-    if err == "closed" then
+--- Send `data` together with one file descriptor via SCM_RIGHTS in a
+--- single sendmsg (so the fd and the frame bytes arrive in order).
+--- `false` (EAGAIN) queues no bytes and no control data, so retrying
+--- is safe; a partial write means the fd was already queued with the
+--- first segment and only the remainder goes out via plain send.
+-- Returns true or nil + error message.
+function socketio.send_with_fd(sock, data, fd)
+  local nwr, err = sock:sendfd(fd, data)
+  if nwr == nil then
+    return nil, "send failed: " .. tostring(err)
+  elseif nwr == false then
+    local ready = lsocket.select(nil, { sock }, 10)
+    if ready == nil then
+      return nil, "send timed out"
+    end
+    nwr, err = sock:sendfd(fd, data)
+    if nwr == nil then
+      return nil, "send failed: " .. tostring(err)
+    elseif nwr == false then
+      return nil, "send timed out"
+    end
+  end
+  if nwr < #data then
+    return socketio.send_all(sock, data:sub(nwr + 1))
+  end
+  return true
+end
+
+--- One recvmsg; returns `chunk, fd` (fd is nil when none arrived with
+--- this chunk), or false when no data is ready, or nil + error message
+--- on socket error/closed. Works on any socket (fds are simply absent
+--- from plain data).
+function socketio.recvfd(sock)
+  local fd, chunk, err = sock:recvfd()
+  if fd == nil and chunk == nil then
+    if err == nil then
       return nil, "connection closed"
     end
     return nil, "recv failed: " .. tostring(err)
   end
-  return chunk -- may be false (would block) or a string
+  if fd == false then
+    return false
+  end
+  return chunk, fd
+end
+
+--- One recv (data only); returns a string chunk, or false when no data
+--- is ready, or nil + error message on socket error. A concurrently
+--- arriving fd is returned as the second value by recvfd; callers that
+--- must not drop fds use recvfd directly.
+function socketio.recv(sock)
+  return (socketio.recvfd(sock))
 end
 
 --- Close if possible; tolerates already-closed sockets.

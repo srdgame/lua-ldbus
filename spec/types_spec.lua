@@ -80,8 +80,7 @@ describe("ldbus.types", function()
       assert.same({ true, "i", "" }, { split("i") })
       assert.same({ true, "s", "" }, { split("s") })
       assert.same({ true, "u", "s" }, { split("us") })
-      assert.same({ true, "h", "" }, { split("h") })  -- valid code here;
-      -- marshal/variant reject 'h' at the value level
+      assert.same({ true, "h", "" }, { split("h") })
     end)
 
     it("splits arrays", function()
@@ -193,8 +192,11 @@ describe("ldbus.types", function()
       assert.has_error(function() types.variant("zz", 1) end)
     end)
 
-    it("rejects unix fd", function()
-      assert.has_error(function() types.variant("h", 1) end)
+    it("accepts unix fd", function()
+      local v = types.variant("h", 3)
+      assert.is_true(types.is_variant(v))
+      assert.equals("h", v.signature)
+      assert.equals(3, v.value)
     end)
 
     it("rejects signatures with more than one complete type", function()

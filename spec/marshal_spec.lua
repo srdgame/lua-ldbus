@@ -58,6 +58,49 @@ describe("ldbus.marshal", function()
     end)
   end)
 
+  describe("unix fd ('h')", function()
+    it("encodes to the fd index in the message fd array", function()
+      -- each 'h' encoded claims the next index: first 'h' -> 0
+      assert.equals("00000000", hex(enc("h", { 7 })))
+      -- a second 'h' in the same body -> index 1
+      assert.equals("00000000" .. "01000000", hex(enc("hh", { 7, 8 })))
+    end)
+
+    it("decodes an index to the real fd from the fds table", function()
+      local values, err = marshal.decode_signature("h", "\0\0\0\0", { 42 })
+      assert.is_nil(err)
+      assert.same({ 42 }, values)
+    end)
+
+    it("errors when the fd index is out of range", function()
+      local values, err = marshal.decode_signature("h", "\0\0\0\0", {})
+      assert.is_nil(values)
+      assert.truthy(err)
+      local values2, err2 = marshal.decode_signature("h", "\010\0\0\0", { 42 })
+      assert.is_nil(values2)
+      assert.truthy(err2)
+    end)
+
+    it("round-trips fds nested in containers", function()
+      -- dict s -> h
+      local raw = enc("a{sh}", { { take = 0 } })
+      local values, err = marshal.decode_signature("a{sh}", raw, { 9 })
+      assert.is_nil(err)
+      assert.same({ { take = 9 } }, values)
+      -- fd array at the top level
+      local raw2 = enc("ah", { { 0 } })
+      local values2, err2 = marshal.decode_signature("ah", raw2, { 5 })
+      assert.is_nil(err2)
+      assert.same({ { 5 } }, values2)
+    end)
+
+    it("counts fds in a signature", function()
+      assert.equals(0, marshal.count_fds("su(ii)as"))
+      assert.equals(1, marshal.count_fds("h"))
+      assert.equals(2, marshal.count_fds("ahsh"))
+    end)
+  end)
+
   describe("alignment", function()
     it("pads strings to 4-byte boundaries between fields", function()
       -- signature "ss": "a" (00000000 6100) then "b" at offset 6 -> align to 8
@@ -265,8 +308,14 @@ describe("ldbus.marshal", function()
       assert.has_error(function() enc("(ii)", { "nope" }) end)
     end)
 
-    it("rejects unix fd in variant at encode time", function()
-      assert.has_error(function() enc("v", { types.variant("h", 1) }) end)
+    it("round-trips unix fd inside a variant", function()
+      local raw = enc("v", { types.variant("h", 0) })
+      -- decode needs the fd table the 'h' index points into
+      local values, err = marshal.decode_signature("v", raw, { 42 })
+      assert.is_nil(err)
+      assert.is_true(types.is_variant(values[1]))
+      assert.equals("h", values[1].signature)
+      assert.equals(42, values[1].value)
     end)
 
     it("decodes truncated data with an error", function()

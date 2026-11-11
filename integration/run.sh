@@ -11,7 +11,7 @@ export LUA_CPATH="$HOME/.lua5.4/lib/?.so;$LUA_CPATH"
 if [ $# -gt 0 ]; then
   SCRIPTS="$*"
 else
-  SCRIPTS="integration/test_basic.lua integration/test_client_server.lua integration/test_signals.lua integration/test_mainloop.lua integration/test_bluez.lua"
+  SCRIPTS="integration/test_basic.lua integration/test_client_server.lua integration/test_fds.lua integration/test_signals.lua integration/test_mainloop.lua integration/test_bluez.lua"
 fi
 
 for script in $SCRIPTS; do

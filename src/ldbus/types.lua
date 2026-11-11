@@ -21,7 +21,7 @@ types.CODES = {
   STRUCT = "r",       -- only valid inside signatures
   DICT_ENTRY = "e",   -- only valid inside signatures
   VARIANT = "v",
-  UNIX_FD = "h",      -- NOT supported by ldbus
+  UNIX_FD = "h",      -- index into the message's fd array (1 fd max)
 }
 
 --- Required byte alignment for each type code.
@@ -183,9 +183,6 @@ function types.variant(signature, value)
   if #rest > 0 then
     error("variant signature must be exactly one complete type: '"
       .. tostring(signature) .. "'", 2)
-  end
-  if signature == "h" then
-    error("unix fd type 'h' is not supported by ldbus", 2)
   end
   return { _dbus_variant = true, signature = signature, value = value }
 end
