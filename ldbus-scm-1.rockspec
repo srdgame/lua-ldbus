@@ -12,6 +12,9 @@ description = {
     SASL EXTERNAL authentication, message framing, exported objects,
     signals, name ownership, and a coroutine-based mainloop.
     Uses lsocket for socket I/O; no libdbus or other C bindings.
+    lsocket is not distributed on LuaRocks -- build it from source
+    (https://github.com/srdgame/lsocket.git) and put lsocket.so on your
+    cpath before using this rock.
   ]],
   homepage = "https://github.com/example/lua-ldbus",
   license = "MIT",
@@ -19,7 +22,6 @@ description = {
 
 dependencies = {
   "lua >= 5.4, < 5.5",
-  "lsocket >= 1.4",
   "middleclass >= 4.1",
 }
 

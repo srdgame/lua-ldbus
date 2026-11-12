@@ -2,7 +2,7 @@
 
 A pure Lua 5.4 implementation of the D-Bus wire protocol and client library.
 No libdbus, no GDBus, no C bindings — just Lua 5.4's `string.pack`/`unpack`
-plus the [lsocket](https://github.com/tomasguerez/lsocket) socket library.
+plus the [lsocket](https://github.com/srdgame/lsocket.git) socket library.
 
 ## Features
 
@@ -21,7 +21,7 @@ plus the [lsocket](https://github.com/tomasguerez/lsocket) socket library.
 ## Requirements
 
 - Lua 5.4 (`lua5.4`)
-- [lsocket](https://luarocks.org/modules/tomas/lsocket) >= 1.4 (the only
+- [lsocket](https://github.com/srdgame/lsocket.git) >= 1.4 (the only
   C dependency; provides sockets + `select`)
 
 ## Install
@@ -36,7 +36,9 @@ Or manually: copy `src/ldbus` into your `lua/5.4/` package path, and build
 lsocket into your cpath, e.g.:
 
 ```sh
-luarocks install lsocket  # or make && copy lsocket.so to ~/.lua5.4/lib/
+# lsocket has no LuaRocks rock; build from source:
+git clone https://github.com/srdgame/lsocket.git
+cd lsocket && make && cp lsocket.so ~/.lua5.4/lib/
 ```
 
 ## Quick start
