@@ -422,12 +422,24 @@ describe("bluez advertising capabilities", function()
         SupportedInstances = ldbus.variant("y", 11),
         ActiveInstances = ldbus.variant("y", 1),
         SupportedIncludes = ldbus.variant("as", { "tx-power" }),
+        SupportedCapabilities = ldbus.variant("a{sv}", {
+          MinTxPower = ldbus.variant("n", -34),
+          MaxTxPower = ldbus.variant("n", 7),
+          MaxAdvLen = ldbus.variant("y", 251),
+          MaxScnRspLen = ldbus.variant("y", 251),
+        }),
       } }
     end
     local caps = adapter:advertising_capabilities()
     assert.equals(11, caps.SupportedInstances)
     assert.equals(1, caps.ActiveInstances)
     assert.same({ "tx-power" }, caps.SupportedIncludes)
+    -- a{sv} properties (SupportedCapabilities) are deeply unwrapped
+    local sc = caps.SupportedCapabilities
+    assert.equals(-34, sc.MinTxPower)
+    assert.equals(7, sc.MaxTxPower)
+    assert.equals(251, sc.MaxAdvLen)
+    assert.equals(251, sc.MaxScnRspLen)
   end)
 
   it("falls back to the ObjectManager cache when the live call fails", function()
@@ -435,13 +447,15 @@ describe("bluez advertising capabilities", function()
     bt._objects["/org/bluez/hci0"] = { [bluez.ADAPTER] = {} }
     local adapter = bt:default_adapter()
     bt._objects["/org/bluez/hci0"][bluez.ADV_MANAGER] = {
-      SupportedInstances = 4, SupportedFeatures = { "HardwareOffload" } }
+      SupportedInstances = 4, SupportedFeatures = { "HardwareOffload" },
+      SupportedCapabilities = { MaxAdvLen = 165 } }
     bt.bus.call = function()
       return nil, { name = "org.freedesktop.DBus.Error.UnknownMethod" }
     end
     local caps = adapter:advertising_capabilities()
     assert.equals(4, caps.SupportedInstances)
     assert.same({ "HardwareOffload" }, caps.SupportedFeatures)
+    assert.equals(165, caps.SupportedCapabilities.MaxAdvLen)
   end)
 
   it("returns nil + err when neither live call nor cache has data", function()

@@ -202,6 +202,9 @@ adv:register(bt:default_adapter())
 local caps = adapter:advertising_capabilities()
 print(caps.SupportedInstances, caps.ActiveInstances)
 print(table.concat(caps.SupportedFeatures, ", "))
+print(caps.SupportedCapabilities.MaxAdvLen)  -- a{sv} dict, e.g.
+                                             -- MinTxPower/MaxTxPower,
+                                             -- MaxAdvLen/MaxScnRspLen
 adv:update{ LocalName = "Renamed" }        -- runtime parameter change;
                                            -- uint16 properties need an
                                            -- explicit variant:

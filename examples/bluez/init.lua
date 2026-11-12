@@ -272,28 +272,41 @@ end
 --- This adapter's LE advertising settings and capabilities
 -- (org.bluez.LEAdvertisingManager1 properties): SupportedInstances /
 -- ActiveInstances (byte counts), SupportedIncludes,
--- SupportedSecondaryChannels, SupportedFeatures (string lists).
--- Live Properties.GetAll first, falling back to the ObjectManager
--- cache. Returns a plain table (values unwrapped), or nil + err.
+-- SupportedSecondaryChannels, SupportedFeatures (string lists) and
+-- SupportedCapabilities (a{sv}: MinTxPower/MaxTxPower, MaxAdvLen/
+-- MaxScnRspLen). Live Properties.GetAll first, falling back to the
+-- ObjectManager cache. Returns a plain table (values unwrapped, a{sv}
+-- entries deeply unwrapped to plain values), or nil + err.
 function Adapter:advertising_capabilities()
   local values, err = self._bt.bus:call(bluez.SERVICE, self._path,
     bluez.PROPS, "GetAll", { bluez.ADV_MANAGER }, { signature = "s" })
+  local props
   if values then
-    local out = {}
+    props = {}
     for k, v in pairs(values[1]) do
-      out[k] = unwrap(v)
+      props[k] = unwrap(v)
     end
-    return out
-  end
-  local cached = self._bt._objects[self._path]
-  if cached and cached[bluez.ADV_MANAGER] then
-    local out = {}
-    for k, v in pairs(cached[bluez.ADV_MANAGER]) do
-      out[k] = v   -- cache values are already unwrapped; copy the table
+  else
+    local cached = self._bt._objects[self._path]
+    if not cached or not cached[bluez.ADV_MANAGER] then
+      return nil, err
     end
-    return out
+    props = cached[bluez.ADV_MANAGER]  -- outer variants already unwrapped
   end
-  return nil, err
+  -- a{sv} properties (e.g. SupportedCapabilities) need one more level
+  local out = {}
+  for k, v in pairs(props) do
+    if type(v) == "table" then
+      local inner = {}
+      for k2, v2 in pairs(v) do
+        inner[k2] = unwrap(v2)
+      end
+      out[k] = inner
+    else
+      out[k] = v
+    end
+  end
+  return out
 end
 
 --------------------------------------------------------------------------------
