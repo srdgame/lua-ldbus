@@ -269,6 +269,33 @@ function Adapter:get_discovery_filters()
   return values[1]
 end
 
+--- This adapter's LE advertising settings and capabilities
+-- (org.bluez.LEAdvertisingManager1 properties): SupportedInstances /
+-- ActiveInstances (byte counts), SupportedIncludes,
+-- SupportedSecondaryChannels, SupportedFeatures (string lists).
+-- Live Properties.GetAll first, falling back to the ObjectManager
+-- cache. Returns a plain table (values unwrapped), or nil + err.
+function Adapter:advertising_capabilities()
+  local values, err = self._bt.bus:call(bluez.SERVICE, self._path,
+    bluez.PROPS, "GetAll", { bluez.ADV_MANAGER }, { signature = "s" })
+  if values then
+    local out = {}
+    for k, v in pairs(values[1]) do
+      out[k] = unwrap(v)
+    end
+    return out
+  end
+  local cached = self._bt._objects[self._path]
+  if cached and cached[bluez.ADV_MANAGER] then
+    local out = {}
+    for k, v in pairs(cached[bluez.ADV_MANAGER]) do
+      out[k] = v   -- cache values are already unwrapped; copy the table
+    end
+    return out
+  end
+  return nil, err
+end
+
 --------------------------------------------------------------------------------
 -- Device (org.bluez.Device1)
 --------------------------------------------------------------------------------

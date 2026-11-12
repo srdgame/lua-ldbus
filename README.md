@@ -195,12 +195,20 @@ local adv = bluez.Advertisement(bt, "/com/example/adv", {
   manufacturer_data = { [0x0059] = "\1\2" }, -- a{qv}: uint16 id -> bytes
 })
 adv:register(bt:default_adapter())
+
+-- query the adapter's advertising capabilities / active instances
+local caps = adapter:advertising_capabilities()
+print(caps.SupportedInstances, caps.ActiveInstances)
+print(table.concat(caps.SupportedFeatures, ", "))
 adv:update{ LocalName = "Renamed" }        -- runtime parameter change;
                                            -- uint16 properties need an
                                            -- explicit variant:
 adv:update{ DiscoverableTimeout = ldbus.variant("q", 0) }
 
 bat:notify("\43")   -- push a new value to subscribed centrals
+
+adv:settings()      -- current settings as a plain table (unwrapped),
+                    -- e.g. { LocalName = "MyDevice", MinInterval = 100 }
 ```
 
 Read/Write handler `opts` arrive unwrapped: `offset`/`mtu` are numbers,

@@ -65,6 +65,21 @@ adapter_obj:method("org.freedesktop.DBus.Properties.Set", "ssv", "",
       calls.alias = value.value
     end
   end)
+adapter_obj:method("org.freedesktop.DBus.Properties.GetAll", "s", "a{sv}",
+  function(iface)
+    if iface == bluez.ADV_MANAGER then
+      return {
+        SupportedInstances        = ldbus.variant("y", 11),
+        ActiveInstances           = ldbus.variant("y", 1),
+        SupportedIncludes         = ldbus.variant("as",
+          { "tx-power", "appearance", "local-name" }),
+        SupportedSecondaryChannels = ldbus.variant("as", { "1M", "2M" }),
+        SupportedFeatures         = ldbus.variant("as",
+          { "CanSetTxPower", "HardwareOffload" }),
+      }
+    end
+    error("no such interface " .. iface)
+  end)
 
 -- fake GATT characteristic: ReadValue / WriteValue / StartNotify / StopNotify
 local char_obj = server:object(CHAR_PATH)
@@ -368,6 +383,16 @@ ldbus.mainloop({ server, client_bus }, {
     assert(calls.adv_props.ManufacturerData
       and calls.adv_props.ManufacturerData.value[89],
       "ManufacturerData missing")
+
+    -- advertisement settings / capabilities query
+    local caps, caps_err = adapter:advertising_capabilities()
+    assert(caps, "advertising_capabilities failed: " .. tostring(caps_err))
+    equals(11, caps.SupportedInstances)
+    equals(1, caps.ActiveInstances)
+    equals("CanSetTxPower", caps.SupportedFeatures[1])
+    equals("2M", caps.SupportedSecondaryChannels[2])
+    equals("TestAdv", adv:settings().LocalName)
+    assert(adv:settings().ManufacturerData[89], "settings ManufacturerData missing")
     equals(true, app:unregister(adapter))
     equals("/com/test/gatt", calls.unregistered)
     -- after unregister, connect events no longer fire
@@ -408,6 +433,8 @@ ldbus.mainloop({ server, client_bus }, {
     -- idempotent: a second start returns the same handle
     equals(ladv:path(), adapter:start_advertising{}:path())
     equals(true, ladv:update{ LocalName = "LuaAdv2", MinInterval = 150 })
+    equals("LuaAdv2", ladv:settings().LocalName)
+    equals(150, ladv:settings().MinInterval)
     for _ = 1, 50 do
       if calls.adv_pc then break end
       adapter:get_prop("Discovering")   -- pump until the signal lands

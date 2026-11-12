@@ -502,6 +502,18 @@ function Advertisement:update(props)
   return true
 end
 
+--- The current advertisement settings as a plain table (LEAdvertisement1
+-- property name -> unwrapped value), e.g. { LocalName = "MyDevice",
+-- MinInterval = 100 }. Snapshot: a new table each call, so later
+-- update() calls do not mutate a previously returned one.
+function Advertisement:settings()
+  local out = {}
+  for k, v in pairs(self._props) do
+    out[k] = bluez.unwrap(v)
+  end
+  return out
+end
+
 --------------------------------------------------------------------------------
 -- module surface
 --------------------------------------------------------------------------------

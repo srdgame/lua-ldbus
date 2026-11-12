@@ -383,3 +383,76 @@ describe("bluez connection events", function()
     assert.equals(0, fired)
   end)
 end)
+
+describe("bluez advertisement settings", function()
+  it("settings() returns an unwrapped snapshot of the current settings", function()
+    local bt = make_bt()
+    local adv = bluez.Advertisement(bt, "/com/test/adv", {
+      local_name = "MyDevice",
+      service_uuids = { "180f" },
+      discoverable = true,
+      min_interval = 100,
+    })
+    local s = adv:settings()
+    assert.equals("MyDevice", s.LocalName)
+    assert.same({ "180f" }, s.ServiceUUIDs)
+    assert.is_true(s.Discoverable)
+    assert.equals(100, s.MinInterval)
+    assert.equal(nil, s.ManufacturerData)
+    -- snapshot: updating afterwards does not mutate the returned table
+    adv:update{ LocalName = "Renamed" }
+    assert.equals("MyDevice", s.LocalName)
+    assert.equals("Renamed", adv:settings().LocalName)
+  end)
+end)
+
+describe("bluez advertising capabilities", function()
+  it("queries live LEAdvertisingManager1 properties via GetAll", function()
+    local bt = make_bt()
+    bt._objects["/org/bluez/hci0"] = { [bluez.ADAPTER] = {} }
+    local adapter = bt:default_adapter()
+    assert.truthy(adapter, "no adapter (refresh over stub bus)")
+    bt.bus.call = function(_, dest, path, iface, member, args, opts)
+      assert.equals(bluez.SERVICE, dest)
+      assert.equals("/org/bluez/hci0", path)
+      assert.equals(bluez.PROPS, iface)
+      assert.equals("GetAll", member)
+      assert.same({ bluez.ADV_MANAGER }, args)
+      return { {
+        SupportedInstances = ldbus.variant("y", 11),
+        ActiveInstances = ldbus.variant("y", 1),
+        SupportedIncludes = ldbus.variant("as", { "tx-power" }),
+      } }
+    end
+    local caps = adapter:advertising_capabilities()
+    assert.equals(11, caps.SupportedInstances)
+    assert.equals(1, caps.ActiveInstances)
+    assert.same({ "tx-power" }, caps.SupportedIncludes)
+  end)
+
+  it("falls back to the ObjectManager cache when the live call fails", function()
+    local bt = make_bt()
+    bt._objects["/org/bluez/hci0"] = { [bluez.ADAPTER] = {} }
+    local adapter = bt:default_adapter()
+    bt._objects["/org/bluez/hci0"][bluez.ADV_MANAGER] = {
+      SupportedInstances = 4, SupportedFeatures = { "HardwareOffload" } }
+    bt.bus.call = function()
+      return nil, { name = "org.freedesktop.DBus.Error.UnknownMethod" }
+    end
+    local caps = adapter:advertising_capabilities()
+    assert.equals(4, caps.SupportedInstances)
+    assert.same({ "HardwareOffload" }, caps.SupportedFeatures)
+  end)
+
+  it("returns nil + err when neither live call nor cache has data", function()
+    local bt = make_bt()
+    bt._objects["/org/bluez/hci0"] = { [bluez.ADAPTER] = {} }
+    local adapter = bt:default_adapter()
+    bt.bus.call = function()
+      return nil, { name = "org.freedesktop.DBus.Error.UnknownMethod" }
+    end
+    local caps, err = adapter:advertising_capabilities()
+    assert.equal(nil, caps)
+    assert.equals("org.freedesktop.DBus.Error.UnknownMethod", err.name)
+  end)
+end)
