@@ -27,7 +27,8 @@ print("server:", server.conn.unique_name)
 -- fake org.bluez service
 --------------------------------------------------------------------------------
 
-local calls = { set = {}, discovery = 0, written = {}, adv_names = {} }
+local calls = { set = {}, discovery = 0, written = {}, adv_names = {},
+  connected = {}, disconnected = {} }
 
 local adapter_obj = server:object("/org/bluez/hci0")
 adapter_obj:method("org.bluez.Adapter1.StartDiscovery", "", "", function()
@@ -80,6 +81,30 @@ char_obj:method("org.bluez.GattCharacteristic1.StopNotify", "", "",
 
 -- fake GattManager1 / LEAdvertisingManager1: validate the client's exports
 -- by calling back into it (cross-service ObjectManager / Properties reads).
+-- probe: bluetoothd-style GATT access to the client's exported objects
+-- (cross-service ReadValue / StartNotify / StopNotify).
+adapter_obj:method("org.bluez.GattManager1.ReadProbe", "s", "ay",
+  function(obj_path)
+    local values, err = server:call(client_bus.conn.unique_name, obj_path,
+      bluez.GATT_CHAR, "ReadValue",
+      { { offset = ldbus.variant("u", 2),
+          device = ldbus.variant("o", DEVICE_PATH) } },
+      { signature = "a{sv}" })
+    if not values then
+      error(ldbus.errors.new(err.name, err.message or err.name))
+    end
+    return values[1]
+  end)
+adapter_obj:method("org.bluez.GattManager1.NotifyProbe", "sb", "",
+  function(obj_path, start)
+    local values, err = server:call(client_bus.conn.unique_name, obj_path,
+      bluez.GATT_CHAR, start and "StartNotify" or "StopNotify", {},
+      { signature = "" })
+    if not values then
+      error(ldbus.errors.new(err.name, err.message or err.name))
+    end
+  end)
+
 adapter_obj:method("org.bluez.GattManager1.RegisterApplication", "oa{sv}", "",
   function(app_path, opts)
     calls.registered = app_path
@@ -92,6 +117,12 @@ adapter_obj:method("org.bluez.GattManager1.RegisterApplication", "oa{sv}", "",
     assert(svc and svc[bluez.GATT_SERVICE], "exported service missing")
     assert(ch and ch[bluez.GATT_CHAR], "exported characteristic missing")
     equals("2a19", ch[bluez.GATT_CHAR].UUID.value)
+    local desc = objs[app_path .. "/service1/char1/desc1"]
+    assert(desc and desc[bluez.GATT_DESC], "exported descriptor missing")
+    equals("2901", desc[bluez.GATT_DESC].UUID.value)
+    assert(ch[bluez.GATT_CHAR].Descriptors, "Descriptors property missing")
+    equals(app_path .. "/service1/char1/desc1",
+      ch[bluez.GATT_CHAR].Descriptors.value[1])
     calls.export_ok = true
   end)
 adapter_obj:method("org.bluez.GattManager1.UnregisterApplication", "o", "",
@@ -236,11 +267,34 @@ ldbus.mainloop({ server, client_bus }, {
     equals(false, calls.notify)
     print("gatt client read/write/subscribe ok")
 
-    -- 7) GATT server: export an app + advertisement, register them
-    local app = bluez.Application(bt, "/com/test/gatt")
+    -- 7) GATT server: export an app + advertisement, register them.
+    -- The app exercises authorize, connection events and subscribe
+    -- callbacks; it stays registered until after those assertions.
+    local auth_allow = false
+    local app = bluez.Application(bt, "/com/test/gatt", {
+      on_authorize = function(ch, op, device, opts)
+        calls.authorized = { op = op, device = device, offset = opts.offset }
+        return auth_allow
+      end,
+      on_connect = function(dev)
+        calls.connected[#calls.connected + 1] = dev end,
+      on_disconnect = function(dev)
+        calls.disconnected[#calls.disconnected + 1] = dev end,
+    })
     local lasvc = app:service("180f")
     local lachar = lasvc:characteristic("2a19", { "read", "notify" },
-      { value = "\1", on_read = function() return "\1\2\3" end })
+      { value = "\1",
+        on_read = function(opts)
+          calls.read_opts = opts
+          return "\1\2\3"
+        end,
+        on_subscribe = function()
+          calls.subscribed = (calls.subscribed or 0) + 1 end,
+        on_unsubscribe = function()
+          calls.unsubscribed = (calls.unsubscribed or 0) + 1 end,
+      })
+    local ldesc = lachar:descriptor("2901", { "read" }, { value = "battery" })
+    equals("/com/test/gatt/service1/char1/desc1", ldesc:path())
     local adv = bluez.Advertisement(bt, "/com/test/adv", {
       local_name = "TestAdv",
       service_uuids = { "180f" },
@@ -251,6 +305,63 @@ ldbus.mainloop({ server, client_bus }, {
       .. tostring(reg_err and (reg_err.name .. ": " .. reg_err.message) or reg_err))
     equals(true, calls.export_ok, "RegisterApplication export check failed")
     equals("/com/test/gatt", calls.registered)
+
+    -- authorize: rejected while auth_allow is false; device resolves to
+    -- a Device handle, opts are unwrapped
+    local rv, rerr = bt.bus:call(bluez.SERVICE, "/org/bluez/hci0",
+      bluez.GATT_MANAGER, "ReadProbe", { lachar:path() },
+      { signature = "s" })
+    assert(not rv, "ReadProbe should be rejected")
+    equals("org.bluez.Error.NotAuthorized", rerr.name)
+    equals("read", calls.authorized.op)
+    equals(DEVICE_PATH, calls.authorized.device:path())
+    equals(2, calls.authorized.offset)
+
+    -- subscribe callbacks via the probe
+    bt.bus:call(bluez.SERVICE, "/org/bluez/hci0",
+      bluez.GATT_MANAGER, "NotifyProbe", { lachar:path(), true },
+      { signature = "sb" })
+    equals(1, calls.subscribed)
+    bt.bus:call(bluez.SERVICE, "/org/bluez/hci0",
+      bluez.GATT_MANAGER, "NotifyProbe", { lachar:path(), false },
+      { signature = "sb" })
+    equals(1, calls.unsubscribed)
+
+    -- connection events (only while registered): connect, dup, disconnect
+    local function emit_connected(v)
+      server:emit(DEVICE_PATH, bluez.PROPS, "PropertiesChanged",
+        "sa{sv}as", { bluez.DEVICE,
+          { Connected = ldbus.variant("b", v) }, {} })
+    end
+    emit_connected(true)
+    for _ = 1, 50 do
+      if #calls.connected > 0 then break end
+      adapter:get_prop("Discovering")   -- pump until the signal lands
+    end
+    equals(1, #calls.connected)
+    equals(DEVICE_PATH, calls.connected[1]:path())
+    emit_connected(true)                -- duplicate: not an edge
+    for _ = 1, 10 do adapter:get_prop("Discovering") end
+    equals(1, #calls.connected)
+    emit_connected(false)
+    for _ = 1, 50 do
+      if #calls.disconnected > 0 then break end
+      adapter:get_prop("Discovering")
+    end
+    equals(1, #calls.disconnected)
+    equals(DEVICE_PATH, calls.disconnected[1]:path())
+
+    -- authorize: allowed once flipped; handler gets unwrapped opts
+    auth_allow = true
+    rv = bt.bus:call(bluez.SERVICE, "/org/bluez/hci0",
+      bluez.GATT_MANAGER, "ReadProbe", { lachar:path() },
+      { signature = "s" })
+    assert(rv, "ReadProbe failed after allow: " .. tostring(rerr))
+    equals(1, rv[1][1])
+    equals(3, rv[1][3])
+    equals(2, calls.read_opts.offset)
+    equals(DEVICE_PATH, calls.read_opts.device:path())
+
     equals(true, adv:register(adapter))
     equals("/com/test/adv", calls.adv_registered)
     equals("TestAdv", calls.adv_names[1])
@@ -259,9 +370,13 @@ ldbus.mainloop({ server, client_bus }, {
       "ManufacturerData missing")
     equals(true, app:unregister(adapter))
     equals("/com/test/gatt", calls.unregistered)
+    -- after unregister, connect events no longer fire
+    emit_connected(true)
+    for _ = 1, 10 do adapter:get_prop("Discovering") end
+    equals(1, #calls.connected)
     equals(true, adv:unregister(adapter))
     equals("/com/test/adv", calls.adv_unregistered)
-    print("gatt server registration ok")
+    print("gatt server registration + auth/connect/subscribe ok")
 
     -- 8) adapter management helpers
     adapter:set_name("LuaBox")

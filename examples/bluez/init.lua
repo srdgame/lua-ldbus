@@ -41,6 +41,7 @@ local bluez = {
   DEVICE = "org.bluez.Device1",
   GATT_SERVICE = "org.bluez.GattService1",
   GATT_CHAR = "org.bluez.GattCharacteristic1",
+  GATT_DESC = "org.bluez.GattDescriptor1",
   GATT_MANAGER = "org.bluez.GattManager1",
   ADV_MANAGER = "org.bluez.LEAdvertisingManager1",
 }
@@ -504,6 +505,16 @@ function Bluez:find_device(address)
     if props and props.Address == address then
       return Device(self, path, bluez.DEVICE)
     end
+  end
+  return nil
+end
+
+--- A Device handle for a cached device path, or nil when the device is
+-- not in the ObjectManager cache. Cache-only: never does I/O.
+function Bluez:device(path)
+  local entry = self._objects[path]
+  if entry and entry[bluez.DEVICE] then
+    return Device(self, path, bluez.DEVICE)
   end
   return nil
 end

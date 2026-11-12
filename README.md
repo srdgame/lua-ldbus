@@ -158,13 +158,28 @@ bluetoothd (`GattManager1` / `LEAdvertisingManager1`). A mainloop must be
 running while registered — bluetoothd calls back into the exported objects.
 
 ```lua
-local app = bluez.Application(bt, "/com/example/gatt")
+local app = bluez.Application(bt, "/com/example/gatt", {
+  on_authorize = function(ch, op, device, opts)
+    -- return false to reject with org.bluez.Error.NotAuthorized;
+    -- device is a Device handle when cached, a path string otherwise
+    if type(device) == "string" then return false end
+    return device:is_paired()
+  end,
+  on_connect    = function(device) ... end, -- only while registered;
+  on_disconnect = function(device) ... end, -- devices already connected
+                                            -- at register() time do not
+                                            -- fire on_connect
+})
 local svc = app:service("180f")
 local bat = svc:characteristic("2a19", { "read", "write", "notify" }, {
   value = "\42",                              -- cached value
   on_read  = function(opts) return "\42" end, -- optional dynamic value
   on_write = function(value, opts) ... end,
+  on_subscribe   = function() ... end,   -- StartNotify/StopNotify (BlueZ
+  on_unsubscribe = function() ... end,   -- does not report the subscriber)
+  on_authorize = function(ch, op, device, opts) ... end,  -- overrides app
 })
+local desc = bat:descriptor("2901", { "read" }, { value = "Battery Level" })
 app:register(bt:default_adapter())
 
 local adv = bluez.Advertisement(bt, "/com/example/adv", {
@@ -187,6 +202,12 @@ adv:update{ DiscoverableTimeout = ldbus.variant("q", 0) }
 
 bat:notify("\43")   -- push a new value to subscribed centrals
 ```
+
+Read/Write handler `opts` arrive unwrapped: `offset`/`mtu` are numbers,
+`device` is a Device handle when the device is in the ObjectManager cache
+(a path string otherwise), and `prepare-authorize` is a boolean. Callback
+errors from `on_authorize` (returning `false` or raising an ldbus error)
+become the D-Bus error reply.
 
 ## API summary
 

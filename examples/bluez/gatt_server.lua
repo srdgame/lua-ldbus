@@ -3,13 +3,29 @@
 -- bluetoothd via org.bluez.GattManager1 / org.bluez.LEAdvertisingManager1.
 --
 --   local bluez = require "bluez"   -- loads gatt_server automatically
---   local app = bluez.Application(bt, "/com/example/gatt")
+--   local app = bluez.Application(bt, "/com/example/gatt", {
+--     on_authorize = function(ch, op, device, opts)
+--       return true   -- return false to reject (org.bluez.Error.NotAuthorized)
+--     end,
+--     on_connect    = function(device) ... end,   -- only while registered
+--     on_disconnect = function(device) ... end,
+--   })
 --   local svc = app:service("180f")
 --   local bat = svc:characteristic("2a19", { "read", "write", "notify" }, {
 --     on_read  = function(opts) return "\42" end,       -- return value
 --     on_write = function(value, opts) ... end,         -- receives string
+--     on_subscribe   = function() ... end,              -- StartNotify
+--     on_unsubscribe = function() ... end,              -- StopNotify
+--     on_authorize   = function(ch, op, dev, opts) ... end,  -- overrides app
 --   })
+--   bat:descriptor("2901", { "read" }, { value = "Battery Level" })
 --   app:register(bt:default_adapter())
+--
+-- Read/Write handler `opts` are unwrapped: offset/mtu are numbers,
+-- `device` is a Device handle when cached (a path string otherwise);
+-- on_subscribe/on_unsubscribe receive no arguments (BlueZ does not report
+-- the subscribing device). Devices already connected at register() time
+-- do not trigger on_connect (baseline snapshot semantics).
 --
 --   local adv = bluez.Advertisement(bt, "/com/example/adv", {
 --     local_name = "MyDevice", service_uuids = { "180f" },
@@ -32,32 +48,24 @@ if not pcall(require, "middleclass") then
 end
 local middleclass = require "middleclass"
 
+-- Shared helpers + descriptor class (bluez is already in package.loaded).
+local common = require "bluez.gatt_common"
+require "bluez.gatt_descriptor"
+local LocalDescriptor = bluez.LocalDescriptor
+
 local to_bytes = bluez.to_bytes
 local from_bytes = bluez.from_bytes
 
-local GATT_APP_IFACE = "org.bluez.GattApplication1"
-local GATT_SERVICE_IFACE = "org.bluez.GattService1"
-local GATT_CHAR_IFACE = "org.bluez.GattCharacteristic1"
+local GATT_APP_IFACE = common.GATT_APP_IFACE
+local GATT_SERVICE_IFACE = common.GATT_SERVICE_IFACE
+local GATT_CHAR_IFACE = common.GATT_CHAR_IFACE
 local ADV_IFACE = "org.bluez.LEAdvertisement1"
 
---- Export org.freedesktop.DBus.Properties Get/GetAll backed by getters.
-local function export_properties(obj, get, getall)
-  obj:method(bluez.PROPS .. ".Get", "ss", "v", function(_, name)
-    local v = get(name)
-    if v == nil then
-      error("no such property: " .. tostring(name))
-    end
-    return v
-  end)
-  obj:method(bluez.PROPS .. ".GetAll", "s", "a{sv}", function()
-    return getall()
-  end)
-end
-
---- Resolve an adapter argument (path string or Adapter handle) to a path.
-local function adapter_path(adapter)
-  return type(adapter) == "table" and adapter:path() or adapter
-end
+local export_properties = common.export_properties
+local adapter_path = common.adapter_path
+local unwrap_opts = common.unwrap_opts
+local authorize = common.authorize
+local pcall_safe = common.pcall_safe
 
 --------------------------------------------------------------------------------
 -- LocalCharacteristic: one exported org.bluez.GattCharacteristic1 object
@@ -73,8 +81,13 @@ function LocalCharacteristic:initialize(service, uuid, path, flags, handlers)
   self.flags = flags or {}
   self.on_read = handlers.on_read
   self.on_write = handlers.on_write
+  self.on_authorize = handlers.on_authorize
+  self.on_subscribe = handlers.on_subscribe
+  self.on_unsubscribe = handlers.on_unsubscribe
   self._value = handlers.value
   self._notifying = false
+  self._descs = {}
+  self._ndescs = 0
 
   local obj = service.app.bt.bus:object(path)
 
@@ -83,8 +96,10 @@ function LocalCharacteristic:initialize(service, uuid, path, flags, handlers)
     function() return self:_props() end)
 
   obj:method(GATT_CHAR_IFACE .. ".ReadValue", "a{sv}", "ay", function(opts)
+    local unwrapped = unwrap_opts(opts, service.app.bt)
+    authorize(self, "read", unwrapped)
     if self.on_read then
-      return to_bytes(self.on_read(opts))
+      return to_bytes(self.on_read(unwrapped))
     end
     if self._value ~= nil then
       return to_bytes(self._value)
@@ -94,10 +109,12 @@ function LocalCharacteristic:initialize(service, uuid, path, flags, handlers)
 
   obj:method(GATT_CHAR_IFACE .. ".WriteValue", "aya{sv}", "",
     function(bytes, opts)
+      local unwrapped = unwrap_opts(opts, service.app.bt)
+      authorize(self, "write", unwrapped)
       local value = from_bytes(bytes)
       self._value = value
       if self.on_write then
-        self.on_write(value, opts)
+        self.on_write(value, unwrapped)
       end
       if self._notifying then
         self:_emit_value()
@@ -109,10 +126,14 @@ function LocalCharacteristic:initialize(service, uuid, path, flags, handlers)
     if self._value ~= nil then
       self:_emit_value()
     end
+    -- BlueZ's StartNotify carries no options, so the subscribing device
+    -- cannot be reported here.
+    pcall_safe(self.on_subscribe)
   end)
 
   obj:method(GATT_CHAR_IFACE .. ".StopNotify", "", "", function()
     self._notifying = false
+    pcall_safe(self.on_unsubscribe)
   end)
 end
 
@@ -143,6 +164,13 @@ function LocalCharacteristic:_props()
   if self._value ~= nil then
     out.Value = ldbus.variant("ay", to_bytes(self._value))
   end
+  if #self._descs > 0 then
+    local paths = {}
+    for i, desc in ipairs(self._descs) do
+      paths[i] = desc._path
+    end
+    out.Descriptors = ldbus.variant("ao", paths)
+  end
   return out
 end
 
@@ -160,6 +188,20 @@ function LocalCharacteristic:notify(value)
   if self._notifying then
     self:_emit_value()
   end
+end
+
+--- Add a descriptor under this characteristic (D-Bus object hierarchy:
+-- descriptors only attach to characteristics). Like services and
+-- characteristics, descriptors must be created before register() --
+-- bluetoothd snapshots the object tree there. `flags` is the D-Bus flags
+-- array, e.g. { "read" }; `handlers`: { on_read, on_write, value,
+-- on_authorize }. Returns the LocalDescriptor.
+function LocalCharacteristic:descriptor(uuid, flags, handlers)
+  self._ndescs = self._ndescs + 1
+  local desc = LocalDescriptor(self, uuid,
+    self._path .. "/desc" .. self._ndescs, flags, handlers)
+  self._descs[#self._descs + 1] = desc
+  return desc
 end
 
 --------------------------------------------------------------------------------
@@ -210,12 +252,24 @@ end
 local Application = middleclass("Application")
 
 --- Create a GATT application bound to `path` (a unique object path prefix
--- on our bus, e.g. "/com/example/gatt").
-function Application:initialize(bt, path)
+-- on our bus, e.g. "/com/example/gatt"). `opts`:
+--   on_authorize   = fn(obj, op, device, opts) -> false rejects with
+--                    org.bluez.Error.NotAuthorized (object-level
+--                    on_authorize overrides)
+--   on_connect     = fn(device)   -- only while the app is registered;
+--   on_disconnect  = fn(device)   -- devices already connected at
+--                                 -- register() time do not fire on_connect
+function Application:initialize(bt, path, opts)
+  opts = opts or {}
   self.bt = bt
   self._path = path
   self._services = {}
   self._nservices = 0
+  self._on_authorize = opts.on_authorize
+  self._on_connect = opts.on_connect
+  self._on_disconnect = opts.on_disconnect
+  self._conn_state = {}      -- { [device_path] = last known Connected }
+  self._conn_handler = nil
 
   bt.bus:object(path):method(bluez.OM .. ".GetManagedObjects", "",
     "a{oa{sa{sv}}}", function()
@@ -249,9 +303,50 @@ function Application:_managed_objects()
     }
     for _, ch in ipairs(svc._chars) do
       out[ch._path] = { [GATT_CHAR_IFACE] = ch:_props() }
+      for _, desc in ipairs(ch._descs) do
+        out[desc._path] = { [common.GATT_DESC_IFACE] = desc:_props() }
+      end
     end
   end
   return out
+end
+
+--- Track Device1 Connected changes for on_connect / on_disconnect.
+-- Snapshots the current cache as the baseline so already-connected
+-- devices do not fire on_connect. Relies on Bluez:_subscribe having
+-- already added a Properties match covering PROPS signals, so no extra
+-- match rule is added here (add_match = false).
+function Application:_watch_connections()
+  local bt = self.bt
+  local state = {}
+  for path, entry in pairs(bt._objects) do
+    if entry[bluez.DEVICE] then
+      state[path] = entry[bluez.DEVICE].Connected == true
+    end
+  end
+  self._conn_state = state
+  local handler
+  handler = function(msg)
+    local iface, changed = msg.body[1], msg.body[2]
+    if iface ~= bluez.DEVICE or not changed then return end
+    local connected = changed.Connected
+    if connected == nil then return end
+    connected = bluez.unwrap(connected) == true
+    local path = msg.path
+    local prev = state[path]
+    if prev == nil then prev = false end
+    if prev == connected then return end   -- not an edge
+    state[path] = connected
+    local dev = common.resolve_device(bt, path)
+    if connected then
+      pcall_safe(self._on_connect, dev)
+    else
+      pcall_safe(self._on_disconnect, dev)
+    end
+  end
+  self._conn_handler = handler
+  bt.bus:on_signal(bluez.PROPS, "PropertiesChanged", handler,
+                   { add_match = false })
 end
 
 --- Register with bluetoothd via org.bluez.GattManager1 (adapter may be a
@@ -263,6 +358,9 @@ function Application:register(adapter)
   if not values then
     return nil, err
   end
+  if (self._on_connect or self._on_disconnect) and not self._conn_handler then
+    self:_watch_connections()
+  end
   return true
 end
 
@@ -271,7 +369,14 @@ function Application:unregister(adapter)
     bluez.GATT_MANAGER, "UnregisterApplication",
     { self._path }, { signature = "o" })
   if not values then
+    -- keep the connection watcher: bluetoothd may still see us registered
     return nil, err
+  end
+  if self._conn_handler then
+    self.bt.bus:off_signal(bluez.PROPS, "PropertiesChanged",
+                           self._conn_handler)
+    self._conn_handler = nil
+    self._conn_state = {}
   end
   return true
 end
