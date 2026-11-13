@@ -159,6 +159,28 @@ adapter_obj:method("org.bluez.LEAdvertisingManager1.RegisterAdvertisement",
 adapter_obj:method("org.bluez.LEAdvertisingManager1.UnregisterAdvertisement",
   "o", "", function(adv_path) calls.adv_unregistered = adv_path end)
 
+-- fake AgentManager1 on /org/bluez + a probe that invokes the client's
+-- exported agent (cross-service RequestConfirmation).
+local root_obj = server:object("/org/bluez")
+root_obj:method("org.bluez.AgentManager1.RegisterAgent", "os", "",
+  function(agent_path, capability)
+    calls.registered_agent = agent_path
+    calls.agent_capability = capability
+  end)
+root_obj:method("org.bluez.AgentManager1.RequestDefaultAgent", "o", "",
+  function() end)
+root_obj:method("org.bluez.AgentManager1.UnregisterAgent", "o", "",
+  function(agent_path) calls.unregistered_agent = agent_path end)
+root_obj:method("org.bluez.AgentManager1.ConfirmProbe", "ou", "",
+  function(agent_path, passkey)
+    local values, err = server:call(client_bus.conn.unique_name, agent_path,
+      bluez.AGENT, "RequestConfirmation", { DEVICE_PATH, passkey },
+      { signature = "ou" })
+    if not values then
+      error(ldbus.errors.new(err.name, err.message or err.name))
+    end
+  end)
+
 server:object("/"):method("org.freedesktop.DBus.ObjectManager.GetManagedObjects",
   "", "a{oa{sa{sv}}}", function()
   return {
@@ -171,10 +193,19 @@ server:object("/"):method("org.freedesktop.DBus.ObjectManager.GetManagedObjects"
     },
     [DEVICE_PATH] = {
       ["org.bluez.Device1"] = {
-        Address = ldbus.variant("s", DEVICE_ADDR),
-        Name    = ldbus.variant("s", "Test Device"),
-        Paired  = ldbus.variant("b", false),
-        RSSI    = ldbus.variant("n", -56),
+        Address      = ldbus.variant("s", DEVICE_ADDR),
+        Name         = ldbus.variant("s", "Test Device"),
+        Paired       = ldbus.variant("b", false),
+        Bonded       = ldbus.variant("b", true),
+        RSSI         = ldbus.variant("n", -56),
+        Appearance   = ldbus.variant("q", 962),
+        TxPower      = ldbus.variant("n", 0),
+        WakeAllowed  = ldbus.variant("b", true),
+        ManufacturerData = ldbus.variant("a{qv}",
+          { [0x0059] = ldbus.variant("ay", { 1, 2, 3 }) }),
+      },
+      ["org.bluez.Battery1"] = {
+        Percentage = ldbus.variant("y", 88),
       },
     },
     [SERVICE_PATH] = {
@@ -447,6 +478,49 @@ ldbus.mainloop({ server, client_bus }, {
     local stopped, stop_err = adapter:stop_advertising()
     assert(not stopped, "stop_advertising should fail when not advertising")
     print("adapter management ok")
+
+    -- 9) Device1 accessors + Battery1 client
+    local seen_dev = bt:find_device(DEVICE_ADDR)
+    assert(seen_dev:is_bonded(), "is_bonded failed")
+    equals(962, seen_dev:appearance())
+    equals(0, seen_dev:tx_power())
+    assert(seen_dev:is_wake_allowed(), "is_wake_allowed failed")
+    local md = seen_dev:manufacturer_data()
+    assert(md and md[89], "manufacturer_data missing")
+    equals("\1\2\3", md[89])
+    local bats = bt:batteries(adapter)
+    assert(#bats == 1, "batteries enumeration failed")
+    equals(DEVICE_PATH, bats[1]:path())
+    equals(88, bats[1]:percentage())   -- live Get errors -> cache fallback
+    print("device accessors + battery ok")
+
+    -- 10) pairing agent: register, confirm probe, reject, unregister
+    local agent_allow = true
+    local agent = bluez.Agent(bt, "/com/test/agent", {
+      capability = "KeyboardDisplay",
+      on_confirm = function(dev, passkey)
+        calls.agent_confirm = { device = dev, passkey = passkey }
+        return agent_allow
+      end,
+    })
+    assert(agent:register(), "agent register failed")
+    equals("/com/test/agent", calls.registered_agent)
+    equals("KeyboardDisplay", calls.agent_capability)
+    local prv, perr = bt.bus:call(bluez.SERVICE, "/org/bluez",
+      bluez.AGENT_MANAGER, "ConfirmProbe", { agent:path(), 123456 },
+      { signature = "ou" })
+    assert(prv, "ConfirmProbe failed: " .. tostring(perr))
+    equals(123456, calls.agent_confirm.passkey)
+    equals(DEVICE_PATH, calls.agent_confirm.device:path())
+    agent_allow = false
+    prv, perr = bt.bus:call(bluez.SERVICE, "/org/bluez",
+      bluez.AGENT_MANAGER, "ConfirmProbe", { agent:path(), 999999 },
+      { signature = "ou" })
+    assert(not prv, "ConfirmProbe should be rejected")
+    equals("org.bluez.Error.Rejected", perr.name)
+    assert(agent:unregister(), "agent unregister failed")
+    equals("/com/test/agent", calls.unregistered_agent)
+    print("pairing agent ok")
 
     -- 9) signals keep the cache fresh: a new device appears, RSSI changes
     server:emit("/org/bluez/hci0", bluez.OM, "InterfacesAdded",

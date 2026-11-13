@@ -120,11 +120,50 @@ adapter:is_discovering()
 -- Device1: address(), address_type(), icon(), rssi(),
 -- set_name(alias)/display-name via label(), is_connected(), is_paired(),
 -- services_resolved(), is_trusted()/set_trusted(on),
--- is_blocked()/set_blocked(on)
+-- is_blocked()/set_blocked(on), uuids(), appearance(), tx_power(),
+-- is_bonded(), is_wake_allowed()/set_wake_allowed(on),
+-- advertising_flags(), advertising_data(), manufacturer_data(),
+-- service_data()
 local dev = bt:find_device("aa:bb:cc:dd:ee:ff")
 dev:set_trusted(true)
 print(dev:label(), dev:rssi(), dev:is_paired())
+print(dev:manufacturer_data()[0x0059])       -- bytes as Lua string
+
+-- Battery1 (devices that expose a battery)
+for _, bat in ipairs(bt:batteries()) do
+  print(bat:path(), bat:percentage())
+end
 ```
+
+### Pairing agent (`bluez.agent`, loaded automatically)
+
+Exports an org.bluez.Agent1 object and registers it as the default
+agent, so bluetoothd consults the app during pairing and service
+authorization. Requires a running mainloop while registered.
+
+```lua
+local agent = bluez.Agent(bt, "/com/example/agent", {
+  capability = "KeyboardDisplay",          -- Agent1 capability (default)
+  on_confirm = function(device, passkey)   -- RequestConfirmation;
+    return passkey == 123456               -- false -> Rejected
+  end,
+  on_authorize = function(device) return true end,
+  on_authorize_service = function(device, uuid) return true end,
+  on_request_passkey = function(device) return 123456 end,
+  on_request_pin_code = function(device) return "1234" end,
+  on_display_passkey = function(device, passkey, entered) ... end,
+  on_display_pin_code = function(device, pin) ... end,
+  on_cancel = function() ... end,          -- current request cancelled
+  on_release = function() ... end,         -- bluetoothd released us
+})
+agent:register()     -- RegisterAgent + RequestDefaultAgent
+-- ... pairing now routes through the handlers ...
+agent:unregister()
+```
+
+Confirm/authorize/request handlers returning `false` (or absent) reply
+`org.bluez.Error.Rejected`; display/cancel/release callbacks run
+fire-and-forget (errors are reported on stderr, never propagated).
 
 ### One-call LE advertising
 

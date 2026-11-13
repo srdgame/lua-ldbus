@@ -5,50 +5,12 @@ package.path = "src/?.lua;src/?/init.lua;examples/?.lua;examples/?/init.lua;" ..
 local ldbus = require "ldbus"
 local bluez = require "bluez"
 local common = require "bluez.gatt_common"
+local stub_bus = require "stub_bus"
 
 local DEV_PATH = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
 
---- A stub bus: records method registrations and signal subscriptions,
--- answers every call successfully, and can replay synthetic signals.
-local function make_bus()
-  local bus = { _methods = {}, _signals = {}, _offs = {} }
-
-  function bus:on_signal(iface, member, fn, opts)
-    self._signals[#self._signals + 1] =
-      { iface = iface, member = member, fn = fn, opts = opts }
-    return true
-  end
-
-  function bus:off_signal(iface, member, fn)
-    self._offs[#self._offs + 1] = { iface = iface, member = member, fn = fn }
-    for i, s in ipairs(self._signals) do
-      if s.fn == fn then table.remove(self._signals, i) break end
-    end
-    return true
-  end
-
-  function bus:object(path)
-    return {
-      method = function(_, key, insig, outsig, fn)
-        bus._methods[path] = bus._methods[path] or {}
-        bus._methods[path][key] = fn
-      end,
-    }
-  end
-
-  function bus:call()
-    return { {} }   -- success, empty reply body
-  end
-
-  function bus:emit() end
-
-  return bus
-end
-
---- A Bluez client over the stub bus; refresh() fails silently (empty cache).
-local function make_bt()
-  return bluez.new{ bus = make_bus() }
-end
+local make_bus = stub_bus.make_bus
+local make_bt = stub_bus.make_bt
 
 --- Feed a synthetic PropertiesChanged(Device1, Connected) to the handler
 -- the app registered (the last PROPS subscription on the bus).

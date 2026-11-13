@@ -35,10 +35,14 @@ local middleclass = require "middleclass"
 local bluez = {
   SERVICE = "org.bluez",
   ROOT = "/",
+  MANAGER_ROOT = "/org/bluez",   -- AgentManager1 / ProfileManager1 live here
   OM = "org.freedesktop.DBus.ObjectManager",
   PROPS = "org.freedesktop.DBus.Properties",
   ADAPTER = "org.bluez.Adapter1",
   DEVICE = "org.bluez.Device1",
+  BATTERY = "org.bluez.Battery1",
+  AGENT_MANAGER = "org.bluez.AgentManager1",
+  AGENT = "org.bluez.Agent1",
   GATT_SERVICE = "org.bluez.GattService1",
   GATT_CHAR = "org.bluez.GattCharacteristic1",
   GATT_DESC = "org.bluez.GattDescriptor1",
@@ -420,6 +424,94 @@ function Device:set_blocked(on)
   return self:set_prop("Blocked", on and true or false)
 end
 
+--- The service UUIDs the device advertises / supports (as full 128-bit
+-- strings).
+function Device:uuids()
+  return self:get_prop("UUIDs")
+end
+
+--- The device appearance category (Appearance property), or nil.
+function Device:appearance()
+  return self:get_prop("Appearance")
+end
+
+--- The advertised TX power in dBm (TxPower property), or nil.
+function Device:tx_power()
+  return self:get_prop("TxPower")
+end
+
+--- True once bonding has completed (Bonded property).
+function Device:is_bonded()
+  return self:get_prop("Bonded") == true
+end
+
+--- True when the device may wake the system (WakeAllowed property,
+-- BlueZ >= 5.82); nil when unsupported.
+function Device:is_wake_allowed()
+  return self:get_prop("WakeAllowed") == true
+end
+
+--- Allow/disallow the device to wake the system.
+function Device:set_wake_allowed(on)
+  return self:set_prop("WakeAllowed", on and true or false)
+end
+
+--- Raw advertising flags (AdvertisingFlags property) as a table of
+-- byte integers, or nil.
+function Device:advertising_flags()
+  return self:get_prop("AdvertisingFlags")
+end
+
+--- The advertising data received from this device (AdvertisingData
+-- property, a{yv}): { [ad_type:int] = value }, variants unwrapped --
+-- byte-array entries stay tables of ints, other types unwrap to plain
+-- values. Returns nil when absent.
+function Device:advertising_data()
+  local raw = self:get_prop("AdvertisingData")
+  if not raw then return nil end
+  local out = {}
+  for k, v in pairs(raw) do
+    out[k] = unwrap(v)
+  end
+  return out
+end
+
+--- Manufacturer-specific advertising data (ManufacturerData property,
+-- a{qv}): { [company_id:int] = bytes-as-Lua-string }. Returns nil
+-- when absent.
+function Device:manufacturer_data()
+  local raw = self:get_prop("ManufacturerData")
+  if not raw then return nil end
+  local out = {}
+  for k, v in pairs(raw) do
+    out[k] = from_bytes(unwrap(v))
+  end
+  return out
+end
+
+--- Service advertising data (ServiceData property, a{sv}):
+-- { [uuid:string] = bytes-as-Lua-string }. Returns nil when absent.
+function Device:service_data()
+  local raw = self:get_prop("ServiceData")
+  if not raw then return nil end
+  local out = {}
+  for k, v in pairs(raw) do
+    out[k] = from_bytes(unwrap(v))
+  end
+  return out
+end
+
+--------------------------------------------------------------------------------
+-- Battery (org.bluez.Battery1)
+--------------------------------------------------------------------------------
+
+local Battery = Object:subclass("Battery")
+
+--- The battery charge percentage (Percentage property, 0-100).
+function Battery:percentage()
+  return self:get_prop("Percentage")
+end
+
 --------------------------------------------------------------------------------
 -- Bluez client: ObjectManager cache + signal subscriptions
 --------------------------------------------------------------------------------
@@ -559,6 +651,14 @@ function Bluez:device(path)
   return nil
 end
 
+--- Enumerate cached devices that expose a battery (org.bluez.Battery1),
+-- optionally limited to one adapter (path string or Adapter handle).
+-- Returns a sorted list of Battery handles.
+function Bluez:batteries(adapter)
+  local prefix = type(adapter) == "table" and adapter:path() or adapter
+  return self:_collect(bluez.BATTERY, Battery, prefix)
+end
+
 --- Collect cached objects implementing `iface` under `prefix` (nil = all),
 -- as a sorted list of `class` handles. Never does I/O.
 function Bluez:_collect(iface, class, prefix)
@@ -598,6 +698,7 @@ bluez.Bluez = Bluez
 bluez.Object = Object
 bluez.Adapter = Adapter
 bluez.Device = Device
+bluez.Battery = Battery
 bluez.to_bytes = to_bytes
 bluez.from_bytes = from_bytes
 bluez.expand_uuid = expand_uuid
@@ -610,6 +711,7 @@ bluez.auto_variant = auto_variant
 package.loaded["bluez"] = bluez
 pcall(require, "bluez.gatt_client")
 pcall(require, "bluez.gatt_server")
+pcall(require, "bluez.agent")
 
 --------------------------------------------------------------------------------
 -- Adapter: one-call LE advertising toggle (uses bluez.Advertisement
